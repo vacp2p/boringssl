@@ -35,12 +35,20 @@
 
 #if defined(OPENSSL_THREADS) && \
     (!defined(OPENSSL_WINDOWS) || defined(__MINGW32__))
+#if defined(__MINGW32__)
+#warning "!!! MINGW32
+#endif
+#if defined(OPENSSL_WINDOWS)
+#warning "!!! WINDOWS
+#endif
+#error "SHOULD NOT HAVE ENTERED THIS CONDITION"
 #include <pthread.h>
 #define OPENSSL_PTHREADS
 #endif
 
 #if defined(OPENSSL_THREADS) && !defined(OPENSSL_PTHREADS) && \
     defined(OPENSSL_WINDOWS)
+#warning "!!!!!!!!!!! openssl_threads+notdefined(openssl_pthreads)+openssl_windows"
 #define OPENSSL_WINDOWS_THREADS
 #endif
 

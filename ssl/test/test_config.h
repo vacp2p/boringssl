@@ -29,6 +29,8 @@ enum class CredentialConfigType {
   kX509,
   kDelegated,
   kSPAKE2PlusV1,
+  kPreSharedKey,
+  kRawPublicKey,
 };
 
 struct CredentialConfig {
@@ -46,6 +48,10 @@ struct CredentialConfig {
   std::vector<uint8_t> pake_password;
   std::vector<uint8_t> trust_anchor_id;
   bool wrong_pake_role = false;
+  std::vector<uint8_t> psk;
+  std::vector<uint8_t> psk_identity;
+  std::vector<uint8_t> psk_context;
+  const EVP_MD *psk_hash;
 };
 
 struct TestConfig {
@@ -188,6 +194,7 @@ struct TestConfig {
   uint16_t expect_cipher_aes = 0;
   uint16_t expect_cipher_no_aes = 0;
   uint16_t expect_cipher = 0;
+  bool expect_no_peer_cert = false;
   std::string expect_peer_cert_file;
   int resumption_delay = 0;
   bool retain_only_sha256_client_cert = false;
@@ -235,6 +242,8 @@ struct TestConfig {
   bool fips_202205 = false;
   bool wpa_202304 = false;
   bool cnsa_202407 = false;
+  bool cnsa1_202603 = false;
+  bool cnsa2_202603 = false;
   std::optional<bool> expect_peer_match_trust_anchor;
   std::optional<std::vector<uint8_t>> expect_peer_available_trust_anchors;
   std::optional<std::vector<uint8_t>> requested_trust_anchors;
@@ -244,6 +253,10 @@ struct TestConfig {
   bool resumption_across_names_enabled = false;
   std::optional<bool> expect_resumable_across_names;
   bool no_server_name_ack = false;
+  std::vector<uint8_t> accepted_peer_cert_types;
+  std::vector<uint8_t> available_client_cert_types;
+  std::optional<uint8_t> expect_peer_certificate_type;
+  std::vector<uint8_t> expect_peer_rpk_sha256;
 
   std::vector<const char *> handshaker_args;
 

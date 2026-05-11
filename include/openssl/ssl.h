@@ -17,14 +17,14 @@
 #ifndef OPENSSL_HEADER_SSL_H
 #define OPENSSL_HEADER_SSL_H
 
-#include <openssl/base.h>   // IWYU pragma: export
+#include <openssl/base.h>  // IWYU pragma: export
 
 #include <openssl/bio.h>
 #include <openssl/buf.h>
 #include <openssl/pem.h>
 #include <openssl/span.h>
-#include <openssl/ssl3.h>
-#include <openssl/tls1.h>
+#include <openssl/ssl3.h>  // IWYU pragma: export
+#include <openssl/tls1.h>  // IWYU pragma: export
 #include <openssl/x509.h>
 
 #if !defined(OPENSSL_WINDOWS)
@@ -492,6 +492,10 @@ OPENSSL_EXPORT int SSL_set_mtu(SSL *ssl, unsigned mtu);
 //
 // This duration overrides the default of 400 milliseconds, which is
 // recommendation of RFC 9147 for real-time protocols.
+//
+// If |ssl| is an open connection, this function may update currently running
+// timers and may make them expire. Callers should call
+// |DTLSv1_get_timeout| for an updated timeout and reschedule accordingly.
 OPENSSL_EXPORT void DTLSv1_set_initial_timeout_duration(SSL *ssl,
                                                         uint32_t duration_ms);
 
@@ -726,14 +730,10 @@ OPENSSL_EXPORT uint32_t SSL_clear_mode(SSL *ssl, uint32_t mode);
 // modes enabled for |ssl|.
 OPENSSL_EXPORT uint32_t SSL_get_mode(const SSL *ssl);
 
-// SSL_CTX_set0_buffer_pool sets a |CRYPTO_BUFFER_POOL| that will be used to
+// SSL_CTX_set1_buffer_pool sets a |CRYPTO_BUFFER_POOL| that will be used to
 // store certificates. This can allow multiple connections to share
 // certificates and thus save memory.
-//
-// The SSL_CTX does not take ownership of |pool| and the caller must ensure
-// that |pool| outlives |ctx| and all objects linked to it, including |SSL|,
-// |X509| and |SSL_SESSION| objects. Basically, don't ever free |pool|.
-OPENSSL_EXPORT void SSL_CTX_set0_buffer_pool(SSL_CTX *ctx,
+OPENSSL_EXPORT void SSL_CTX_set1_buffer_pool(SSL_CTX *ctx,
                                              CRYPTO_BUFFER_POOL *pool);
 
 
@@ -794,9 +794,27 @@ OPENSSL_EXPORT SSL_CREDENTIAL *SSL_CREDENTIAL_new_x509(void);
 // SSL_CREDENTIAL_up_ref increments the reference count of |cred|.
 OPENSSL_EXPORT void SSL_CREDENTIAL_up_ref(SSL_CREDENTIAL *cred);
 
+// SSL_CREDENTIAL_dup_ref increments the reference count of |cred| and returns
+// |cred|. The caller must call |SSL_CREDENTIAL_free| on the result to release
+// the reference.
+//
+// WARNING: Although the result is non-const for use with |SSL_CREDENTIAL_free|,
+// it is still shared with other parts of the application that share the same
+// object. Avoid mutating shared |SSL_CREDENTIAL|s.
+OPENSSL_EXPORT SSL_CREDENTIAL *SSL_CREDENTIAL_dup_ref(
+    const SSL_CREDENTIAL *cred);
+
 // SSL_CREDENTIAL_free decrements the reference count of |cred|. If it reaches
 // zero, all data referenced by |cred| and |cred| itself are released.
 OPENSSL_EXPORT void SSL_CREDENTIAL_free(SSL_CREDENTIAL *cred);
+
+// SSL_CREDENTIAL_is_complete returns one if the returns one if |cred| has all
+// required properties configured, and zero otherwise.
+//
+// This includes checks on whether the public key is present in a X.509
+// credential and whether a private key or private key method has been set up
+// for such.
+OPENSSL_EXPORT int SSL_CREDENTIAL_is_complete(const SSL_CREDENTIAL *cred);
 
 // SSL_CREDENTIAL_set1_private_key sets |cred|'s private key to |cred|. It
 // returns one on success and zero on failure.
@@ -883,7 +901,8 @@ OPENSSL_EXPORT void SSL_CREDENTIAL_set_must_match_issuer(SSL_CREDENTIAL *cred,
 //
 // After calling this function, it is an error to modify |cred|. Doing so may
 // result in inconsistent handshake behavior or race conditions.
-OPENSSL_EXPORT int SSL_CTX_add1_credential(SSL_CTX *ctx, SSL_CREDENTIAL *cred);
+OPENSSL_EXPORT int SSL_CTX_add1_credential(SSL_CTX *ctx,
+                                           const SSL_CREDENTIAL *cred);
 
 // SSL_add1_credential appends |cred| to |ssl|'s credential list. It returns one
 // on success and zero on error. The credential list is maintained in order of
@@ -891,7 +910,7 @@ OPENSSL_EXPORT int SSL_CTX_add1_credential(SSL_CTX *ctx, SSL_CREDENTIAL *cred);
 //
 // After calling this function, it is an error to modify |cred|. Doing so may
 // result in inconsistent handshake behavior or race conditions.
-OPENSSL_EXPORT int SSL_add1_credential(SSL *ssl, SSL_CREDENTIAL *cred);
+OPENSSL_EXPORT int SSL_add1_credential(SSL *ssl, const SSL_CREDENTIAL *cred);
 
 // SSL_certs_clear removes all credentials configured on |ssl|. It also removes
 // the certificate chain and private key on the legacy credential.
@@ -1139,6 +1158,9 @@ OPENSSL_EXPORT int SSL_set_ocsp_response(SSL *ssl, const uint8_t *response,
 #define SSL_SIGN_RSA_PSS_RSAE_SHA384 0x0805
 #define SSL_SIGN_RSA_PSS_RSAE_SHA512 0x0806
 #define SSL_SIGN_ED25519 0x0807
+#define SSL_SIGN_ML_DSA_44 0x0904
+#define SSL_SIGN_ML_DSA_65 0x0905
+#define SSL_SIGN_ML_DSA_87 0x0906
 
 // SSL_SIGN_RSA_PKCS1_SHA256_LEGACY is a backport of RSASSA-PKCS1-v1_5 with
 // SHA-256 to TLS 1.3. It is disabled by default and only defined for client
@@ -1968,6 +1990,11 @@ OPENSSL_EXPORT X509 *SSL_SESSION_get0_peer(const SSL_SESSION *session);
 // built during verification. The caller does not take ownership of the result.
 OPENSSL_EXPORT const STACK_OF(CRYPTO_BUFFER) *
 SSL_SESSION_get0_peer_certificates(const SSL_SESSION *session);
+
+// SSL_SESSION_get0_peer_rpk returns the peer raw public key stored in
+// |session|, or NULL if the peer did not send a raw public key.
+OPENSSL_EXPORT const EVP_PKEY *SSL_SESSION_get0_peer_rpk(
+    const SSL_SESSION *session);
 
 // SSL_SESSION_get0_signed_cert_timestamp_list sets |*out| and |*out_len| to
 // point to |*out_len| bytes of SCT information stored in |session|. This is
@@ -3446,7 +3473,7 @@ OPENSSL_EXPORT void SSL_get0_peer_application_settings(const SSL *ssl,
 OPENSSL_EXPORT int SSL_has_application_settings(const SSL *ssl);
 
 // SSL_set_alps_use_new_codepoint configures whether to use the new ALPS
-// codepoint. By default, the old codepoint is used.
+// codepoint. By default, the new codepoint is used.
 OPENSSL_EXPORT void SSL_set_alps_use_new_codepoint(SSL *ssl, int use_new);
 
 
@@ -3691,26 +3718,92 @@ OPENSSL_EXPORT const SRTP_PROTECTION_PROFILE *SSL_get_selected_srtp_profile(
     SSL *ssl);
 
 
-// Pre-shared keys.
+// TLS 1.3 pre-shared keys.
 //
-// Connections may be configured with PSK (Pre-Shared Key) cipher suites. These
-// authenticate using out-of-band pre-shared keys rather than certificates. See
-// RFC 4279.
+// TLS 1.3 connections can be authenticated using external pre-shared keys
+// (PSKs), as described in RFC 9258. These are represented in BoringSSL with
+// |SSL_CREDENTIAL| objects.
+//
+// BoringSSL only implements the PSK importer interface from RFC 9258. The
+// underlying protocol- and cipher-specific TLS 1.3 PSK mechanism is not exposed
+// directly.
+
+// SSL_CREDENTIAL_new_pre_shared_key returns a newly-allocated |SSL_CREDENTIAL|
+// representing an external pre-shared key, as described in RFC 9258, or NULL on
+// error. |key| is the base key, |id| is the external identity, and |md| is the
+// hash function. The result may be added to the credential list with
+// |SSL_CTX_add1_credential| or |SSL_add1_credential|. |context| is the context
+// string to use when importing to TLS.
+//
+// WARNING: An attacker with knowledge of |key| can impersonate either side of
+// the connection. Additionally, using a pre-shared key exposes |key| to offline
+// brute force attacks. |key| must thus be a high-entropy, secret value.
+// Passwords or short PINs, for example, would not be safe to use as |key|.
+//
+// Callers can configure the credential list with multiple PSKs, or a mix of
+// PSKs and other credentials, in some preference order. Due to protocol
+// differences, clients and servers evaluate PSKs in the credential list
+// differently:
+//
+// - As a server, PSK credentials behave similarly to other credentials. Callers
+//   can configure them dynamically in the certificate callbacks (see
+//   |SSL_CTX_set_select_certificate_cb| and |SSL_CTX_set_cert_cb|). After those
+//   callbacks run, BoringSSL will select a credential to use from the list.
+//
+// - As a client, PSK credentials are offered in the ClientHello and selected by
+//   the server. This means all PSK credentials must be configured before
+//   starting the handshake, and the order between PSK and non-PSK credentials
+//   will be ignored. PSK credentials cannot be configured dynamically in
+//   callbacks such as |SSL_CTX_set_cert_cb|.
+//
+// A single connection may be configured to accept only certificate-based
+// handshakes, only PSK-based handshakes, or both. The server credential
+// determines the kind of handshake, so this is implicitly controlled by the
+// credential list as a server:
+//
+// - If the credential list only contains PSKs, BoringSSL will only consider
+//   PSK-based handshakes.
+//
+// - If the credential list contains PSKs and certificates, BoringSSL will
+//   consider both, depending on the client.
+//
+// As a client, if any PSK credentials are configured, BoringSSL will only
+// accept PSK-based handshakes by default. Setting the verify mode to
+// |SSL_VERIFY_PEER| (see |SSL_CTX_set_verify| and |SSL_CTX_set_custom_verify|)
+// overrides this behavior and causes BoringSSL to accept either.
+//
+// In both clients and servers, if a caller configures one or more PSK
+// credentials, and calls no certificate-related functions, the connection will
+// only accept one of those PSKs.
+OPENSSL_EXPORT SSL_CREDENTIAL *SSL_CREDENTIAL_new_pre_shared_key(
+    const uint8_t *key, size_t key_len, const uint8_t *id, size_t id_len,
+    const EVP_MD *md, const uint8_t *context, size_t context_len);
+
+
+// TLS 1.2 pre-shared keys.
+//
+// TLS 1.2 connections may be configured with PSK (Pre-Shared Key) cipher
+// suites. These authenticate using out-of-band pre-shared keys rather than
+// certificates. See RFC 4279.
 //
 // This implementation uses NUL-terminated C strings for identities and identity
 // hints, so values with a NUL character are not supported. (RFC 4279 does not
 // specify the format of an identity.)
+//
+// Functions in this section only relate to PSKs in TLS 1.2 or earlier. New
+// PSK-based applications likely do not need this functionality and instead
+// should use TLS 1.3. See |SSL_CREDENTIAL_new_pre_shared_key| for TLS 1.3 PSKs.
 
-// PSK_MAX_IDENTITY_LEN is the maximum supported length of a PSK identity,
-// excluding the NUL terminator.
+// PSK_MAX_IDENTITY_LEN is the maximum supported length of a TLS 1.2 PSK
+// identity, excluding the NUL terminator.
 #define PSK_MAX_IDENTITY_LEN 128
 
-// PSK_MAX_PSK_LEN is the maximum supported length of a pre-shared key.
+// PSK_MAX_PSK_LEN is the maximum supported length of a TLS 1.2 pre-shared key.
 #define PSK_MAX_PSK_LEN 256
 
-// SSL_CTX_set_psk_client_callback sets the callback to be called when PSK is
-// negotiated on the client. This callback must be set to enable PSK cipher
-// suites on the client.
+// SSL_CTX_set_psk_client_callback sets the callback to be called when TLS 1.2
+// PSK is negotiated on the client. This callback must be set to enable PSK
+// cipher suites on the client.
 //
 // The callback is passed the identity hint in |hint| or NULL if none was
 // provided. It should select a PSK identity and write the identity and the
@@ -3724,17 +3817,17 @@ OPENSSL_EXPORT void SSL_CTX_set_psk_client_callback(
                                  unsigned max_identity_len, uint8_t *psk,
                                  unsigned max_psk_len));
 
-// SSL_set_psk_client_callback sets the callback to be called when PSK is
-// negotiated on the client. This callback must be set to enable PSK cipher
+// SSL_set_psk_client_callback sets the callback to be called when TLS 1.2 PSK
+// is negotiated on the client. This callback must be set to enable PSK cipher
 // suites on the client. See also |SSL_CTX_set_psk_client_callback|.
 OPENSSL_EXPORT void SSL_set_psk_client_callback(
     SSL *ssl, unsigned (*cb)(SSL *ssl, const char *hint, char *identity,
                              unsigned max_identity_len, uint8_t *psk,
                              unsigned max_psk_len));
 
-// SSL_CTX_set_psk_server_callback sets the callback to be called when PSK is
-// negotiated on the server. This callback must be set to enable PSK cipher
-// suites on the server.
+// SSL_CTX_set_psk_server_callback sets the callback to be called when TLS 1.2
+// PSK is negotiated on the server. This callback must be set to enable PSK
+// cipher suites on the server.
 //
 // The callback is passed the identity in |identity|. It should write a PSK of
 // length at most |max_psk_len| to |psk| and return the number of bytes written
@@ -3743,8 +3836,8 @@ OPENSSL_EXPORT void SSL_CTX_set_psk_server_callback(
     SSL_CTX *ctx, unsigned (*cb)(SSL *ssl, const char *identity, uint8_t *psk,
                                  unsigned max_psk_len));
 
-// SSL_set_psk_server_callback sets the callback to be called when PSK is
-// negotiated on the server. This callback must be set to enable PSK cipher
+// SSL_set_psk_server_callback sets the callback to be called when TLS 1.2 PSK
+// is negotiated on the server. This callback must be set to enable PSK cipher
 // suites on the server. See also |SSL_CTX_set_psk_server_callback|.
 OPENSSL_EXPORT void SSL_set_psk_server_callback(
     SSL *ssl, unsigned (*cb)(SSL *ssl, const char *identity, uint8_t *psk,
@@ -3762,12 +3855,12 @@ OPENSSL_EXPORT int SSL_CTX_use_psk_identity_hint(SSL_CTX *ctx,
 OPENSSL_EXPORT int SSL_use_psk_identity_hint(SSL *ssl,
                                              const char *identity_hint);
 
-// SSL_get_psk_identity_hint returns the PSK identity hint advertised for |ssl|
-// or NULL if there is none.
+// SSL_get_psk_identity_hint returns the TLS 1.2 PSK identity hint advertised
+// for |ssl| or NULL if there is none.
 OPENSSL_EXPORT const char *SSL_get_psk_identity_hint(const SSL *ssl);
 
-// SSL_get_psk_identity, after the handshake completes, returns the PSK identity
-// that was negotiated by |ssl| or NULL if PSK was not used.
+// SSL_get_psk_identity, after the handshake completes, returns the TLS 1.2 PSK
+// identity that was negotiated by |ssl| or NULL if PSK was not used.
 OPENSSL_EXPORT const char *SSL_get_psk_identity(const SSL *ssl);
 
 
@@ -3803,6 +3896,113 @@ OPENSSL_EXPORT int SSL_CREDENTIAL_set1_delegated_credential(
     SSL_CREDENTIAL *cred, CRYPTO_BUFFER *dc);
 
 
+// Raw Public Keys (RFC 7250).
+//
+// Raw public keys can be used (e.g., instead of X.509 certificates) to
+// authenticate a TLS connection, assuming an out-of-band mechanism has been
+// used to bind the public keys to their presenting entities.
+//
+// A caller wishing to authenticate using a raw public key must construct an
+// |SSL_CREDENTIAL| with |SSL_CREDENTIAL_new_raw_public_key| and add it to the
+// credential list (see |SSL_CTX_add1_credential|). Callers may configure a mix
+// of raw public keys and other credentials on the same |SSL| or |SSL_CTX| to
+// support a range of peers.
+//
+// When raw public keys are in use, the client_certificate_type and
+// server_certificate_type extensions are sent in the handshake to indicate to
+// the peer which type(s) of certificate(s) can be exchanged.
+//
+// To verify a received raw public key, the caller must set a custom
+// verification callback (see |SSL_CTX_set_custom_verify|). If no callback is
+// configured, raw public keys will be rejected by default.
+
+// TLSEXT_cert_type_* are certificate types with values taken from the "TLS
+// Certificate Types" subregistry of the TLS Extensions registry.
+#define TLSEXT_cert_type_x509 0x00
+#define TLSEXT_cert_type_rpk 0x02
+
+// SSL_CREDENTIAL_new_raw_public_key returns a new raw public key credential
+// using |pkey| as the public and private key, or nullptr on error. |pkey| must
+// have both a private and public key.
+//
+// Callers should then add the returned credential with
+// |SSL_CTX_add1_credential| and release it with |SSL_CREDENTIAL_free| when
+// done.
+//
+// This credential may be configured before the handshake or dynamically in the
+// early callback (see |SSL_CTX_set_select_certificate_cb|) and certificate
+// callback (see |SSL_CTX_set_cert_cb|).
+OPENSSL_EXPORT SSL_CREDENTIAL *SSL_CREDENTIAL_new_raw_public_key(
+    EVP_PKEY *pkey);
+
+// SSL_CREDENTIAL_new_raw_public_key_custom returns a new raw public key
+// credential using |pubkey| as the public key and |method| as the custom
+// private key method, or nullptr on error. |pkey| must have a public key.
+// |method| must remain valid for the lifetime of the returned credential. See
+// |SSL_CREDENTIAL_set_private_key_method| for how the custom private key method
+// is used.
+//
+// Callers should then add the returned credential with
+// |SSL_CTX_add1_credential| and release it with |SSL_CREDENTIAL_free| when
+// done.
+//
+// This credential may be configured before the handshake or dynamically in the
+// early callback (see |SSL_CTX_set_select_certificate_cb|) and certificate
+// callback (see |SSL_CTX_set_cert_cb|).
+OPENSSL_EXPORT SSL_CREDENTIAL *SSL_CREDENTIAL_new_raw_public_key_custom(
+    EVP_PKEY *pubkey, const SSL_PRIVATE_KEY_METHOD *method);
+
+// SSL_CTX_set1_accepted_peer_cert_types sets the types of certificates that the
+// caller wishes to accept from the peer, for |ctx|. |values| is a nonempty list
+// of |num_values| certificate types (|TLSEXT_cert_type_*| values) in preference
+// order. If a valid list is not configured explicitly, only X.509 certificates
+// are accepted by default. This function returns one on success or zero on
+// failure.
+OPENSSL_EXPORT int SSL_CTX_set1_accepted_peer_cert_types(SSL_CTX *ctx,
+                                                         const uint8_t *values,
+                                                         size_t num_values);
+
+// SSL_set1_accepted_peer_cert_types behaves like
+// |SSL_CTX_set1_accepted_peer_cert_types|, but configures the values on |ssl|.
+OPENSSL_EXPORT int SSL_set1_accepted_peer_cert_types(SSL *ssl,
+                                                     const uint8_t *values,
+                                                     size_t num_values);
+
+// SSL_CTX_set1_available_client_cert_types sets the types of certificates that
+// the caller, as a client, wishes to advertise in order to authenticate itself
+// to the server, for |ctx|. |values| is a nonempty list of |num_values|
+// certificate types (|TLSEXT_cert_type_*| values) in preference order. Any
+// values configured via this function will be sent in the
+// client_certificate_type extension in ClientHello. |values| may be empty to
+// indicate omission of the client_certificate_extension.
+//
+// Calling this function is optional: by default, the client_certificate_type
+// extension for a client will be determined implicitly by the types of
+// |SSL_CREDENTIAL|s present in the credential list. This function should only
+// be used if the caller configures client credentials late (after the handshake
+// begins), or wishes to override the default order derived from the credential
+// list. This returns one on success or zero on failure.
+OPENSSL_EXPORT int SSL_CTX_set1_available_client_cert_types(
+    SSL_CTX *ctx, const uint8_t *values, size_t num_values);
+
+// SSL_set1_available_client_cert_types behaves like
+// |SSL_CTX_set1_available_client_cert_types|, but configures the values on
+// |ssl|.
+OPENSSL_EXPORT int SSL_set1_available_client_cert_types(SSL *ssl,
+                                                        const uint8_t *values,
+                                                        size_t num_values);
+
+// SSL_get_peer_cert_type returns a |TLSEXT_cert_type_*| value describing the
+// type of the peer's certificate.  If the peer has no certificate, or it is too
+// early in the handshake to receive one, this function returns
+// |TLSEXT_cert_type_x509|.
+OPENSSL_EXPORT int SSL_get_peer_cert_type(const SSL *ssl);
+
+// SSL_get0_peer_rpk returns the peer's raw public key from |ssl|, if the peer
+// has sent one in the handshake. It returns nullptr otherwise.
+OPENSSL_EXPORT EVP_PKEY *SSL_get0_peer_rpk(const SSL *ssl);
+
+
 // Password Authenticated Key Exchange (PAKE).
 //
 // Password Authenticated Key Exchange protocols allow client and server to
@@ -3820,10 +4020,9 @@ OPENSSL_EXPORT int SSL_CREDENTIAL_set1_delegated_credential(
 // below may be used to implement this, provided the same |SSL_CREDENTIAL|
 // object is used across connections. Applications using multiple connections
 // should use the PAKE credential only once to authenticate a high-entropy
-// secret, e.g. exporting a PSK from |SSL_export_keying_material|, and use the
-// high-entropy secret for subsequent connections.
-//
-// TODO(crbug.com/369963041): Implement RFC 9258 so one can actually do that.
+// secret. For example, an application may export a PSK from a PAKE connection
+// with |SSL_export_keying_material|, and then pass the result to
+// |SSL_CREDENTIAL_new_pre_shared_key| to authenticate subsequent connections.
 //
 // WARNING: PAKE support in TLS is still experimental and may change as the
 // standard evolves. See
@@ -4313,7 +4512,7 @@ OPENSSL_EXPORT const char *SSL_early_data_reason_string(
 //
 // ECH support in BoringSSL is still experimental and under development.
 //
-// See https://tools.ietf.org/html/draft-ietf-tls-esni-13.
+// See RFC 9849.
 
 // SSL_set_enable_ech_grease configures whether the client will send a GREASE
 // ECH extension when no supported ECHConfig is available.
@@ -6041,6 +6240,19 @@ OPENSSL_EXPORT int SSL_check_private_key(const SSL *ssl);
 // security levels mechanism is not used.
 OPENSSL_EXPORT int SSL_CTX_get_security_level(const SSL_CTX *ctx);
 
+// SSL_CTX_set0_buffer_pool calls |SSL_CTX_set1_buffer_pool|. Use
+// |SSL_CTX_set1_buffer_pool| instead.
+//
+// WARNING: Despite being named set0, this function does not adopt the caller's
+// reference to |pool| and instead increments its own reference like a set1
+// function. Historically, |CRYPTO_BUFFER_POOL| was not reference-counted and
+// this function saved a non-owning pointer, expecting the caller to maintain a
+// lifetime relationship between the two objects. Now that pools are
+// reference-counted, the compatible behavior is to treat it as set0 rather than
+// ownership-transfering.
+OPENSSL_EXPORT void SSL_CTX_set0_buffer_pool(SSL_CTX *ctx,
+                                             CRYPTO_BUFFER_POOL *pool);
+
 
 // Compliance policy configurations
 //
@@ -6096,13 +6308,38 @@ enum ssl_compliance_policy_t BORINGSSL_ENUM_INT {
   // The cipher suite configuration mini-language can be used to similarly
   // configure prior TLS versions if they are enabled.
   ssl_compliance_policy_cnsa_202407,
+
+  // ssl_compliance_policy_cnsa1_202603 configures a TLS connection to use:
+  //   * TLS 1.2 or TLS 1.3.
+  //   * For TLS 1.2, only TLS_ECDHE_[ECDSA|RSA]_WITH_AES_256_GCM_SHA384.
+  //   * For TLS 1.3, only AES-256-GCM.
+  //   * ML-KEM-1024 or P-384 for key agreement, preferring ML-KEM-1024 if the
+  //     client supports it.
+  //   * For handshake signatures, only ECDSA with P-384 and SHA-384, or RSA
+  //     with SHA-384.
+  //
+  // Note: this setting aids with compliance with CNSA requirements but does not
+  // guarantee it. Careful reading of RFC 9151 is recommended.
+  ssl_compliance_policy_cnsa1_202603,
+
+  // ssl_compliance_policy_cnsa2_202603 configures a TLS connection to use:
+  //   * Only TLS 1.3, with AES-256-GCM.
+  //   * Only ML-KEM-1024 for key agreement.
+  //   * For handshake signatures, only ECDSA with P-384 and SHA-384, or RSA
+  //     with SHA-384.
+  //
+  // Note: this setting aids with compliance with CNSA requirements but does not
+  // guarantee it. Careful reading of draft-becker-cnsa2-tls-profile is
+  // recommended.
+  ssl_compliance_policy_cnsa2_202603,
 };
 
 // SSL_CTX_set_compliance_policy configures various aspects of |ctx| based on
 // the given policy requirements. Subsequently calling other functions that
 // configure |ctx| may override |policy|, or may not. This should be the final
-// configuration function called in order to have defined behaviour. It's a
-// fatal error if |policy| is |ssl_compliance_policy_none|.
+// configuration function called in order to have defined behaviour matching the
+// configuration profile documented for |policy| above. It's a fatal error if
+// |policy| is |ssl_compliance_policy_none|.
 OPENSSL_EXPORT int SSL_CTX_set_compliance_policy(
     SSL_CTX *ctx, enum ssl_compliance_policy_t policy);
 
@@ -6174,9 +6411,9 @@ OPENSSL_EXPORT enum ssl_compliance_policy_t SSL_get_compliance_policy(
 #define SSL_CTRL_SESS_NUMBER doesnt_exist
 #define SSL_CTRL_SET_CURVES doesnt_exist
 #define SSL_CTRL_SET_CURVES_LIST doesnt_exist
+#define SSL_CTRL_SET_ECDH_AUTO doesnt_exist
 #define SSL_CTRL_SET_GROUPS doesnt_exist
 #define SSL_CTRL_SET_GROUPS_LIST doesnt_exist
-#define SSL_CTRL_SET_ECDH_AUTO doesnt_exist
 #define SSL_CTRL_SET_MAX_CERT_LIST doesnt_exist
 #define SSL_CTRL_SET_MAX_SEND_FRAGMENT doesnt_exist
 #define SSL_CTRL_SET_MSG_CALLBACK doesnt_exist
@@ -6197,83 +6434,218 @@ OPENSSL_EXPORT enum ssl_compliance_policy_t SSL_get_compliance_policy(
 #define SSL_CTRL_SET_TMP_RSA doesnt_exist
 #define SSL_CTRL_SET_TMP_RSA_CB doesnt_exist
 
-// |BORINGSSL_PREFIX| already makes each of these symbols into macros, so there
-// is no need to define conflicting macros.
-#if !defined(BORINGSSL_PREFIX)
-
+// |BORINGSSL_PREFIX| already makes some of these symbols into macros, so there
+// is no need to define conflicting macros; however it is compiler specific
+// which ones become macros.
+#if !defined(DTLSv1_get_timeout)
 #define DTLSv1_get_timeout DTLSv1_get_timeout
+#endif
+#if !defined(DTLSv1_handle_timeout)
 #define DTLSv1_handle_timeout DTLSv1_handle_timeout
+#endif
+#if !defined(SSL_CTX_add0_chain_cert)
 #define SSL_CTX_add0_chain_cert SSL_CTX_add0_chain_cert
+#endif
+#if !defined(SSL_CTX_add1_chain_cert)
 #define SSL_CTX_add1_chain_cert SSL_CTX_add1_chain_cert
+#endif
+#if !defined(SSL_CTX_add_extra_chain_cert)
 #define SSL_CTX_add_extra_chain_cert SSL_CTX_add_extra_chain_cert
-#define SSL_CTX_clear_extra_chain_certs SSL_CTX_clear_extra_chain_certs
+#endif
+#if !defined(SSL_CTX_clear_chain_certs)
 #define SSL_CTX_clear_chain_certs SSL_CTX_clear_chain_certs
+#endif
+#if !defined(SSL_CTX_clear_extra_chain_certs)
+#define SSL_CTX_clear_extra_chain_certs SSL_CTX_clear_extra_chain_certs
+#endif
+#if !defined(SSL_CTX_clear_mode)
 #define SSL_CTX_clear_mode SSL_CTX_clear_mode
+#endif
+#if !defined(SSL_CTX_clear_options)
 #define SSL_CTX_clear_options SSL_CTX_clear_options
+#endif
+#if !defined(SSL_CTX_get0_chain_certs)
 #define SSL_CTX_get0_chain_certs SSL_CTX_get0_chain_certs
+#endif
+#if !defined(SSL_CTX_get_extra_chain_certs)
 #define SSL_CTX_get_extra_chain_certs SSL_CTX_get_extra_chain_certs
+#endif
+#if !defined(SSL_CTX_get_max_cert_list)
 #define SSL_CTX_get_max_cert_list SSL_CTX_get_max_cert_list
+#endif
+#if !defined(SSL_CTX_get_mode)
 #define SSL_CTX_get_mode SSL_CTX_get_mode
+#endif
+#if !defined(SSL_CTX_get_options)
 #define SSL_CTX_get_options SSL_CTX_get_options
+#endif
+#if !defined(SSL_CTX_get_read_ahead)
 #define SSL_CTX_get_read_ahead SSL_CTX_get_read_ahead
+#endif
+#if !defined(SSL_CTX_get_session_cache_mode)
 #define SSL_CTX_get_session_cache_mode SSL_CTX_get_session_cache_mode
+#endif
+#if !defined(SSL_CTX_get_tlsext_ticket_keys)
 #define SSL_CTX_get_tlsext_ticket_keys SSL_CTX_get_tlsext_ticket_keys
+#endif
+#if !defined(SSL_CTX_need_tmp_RSA)
 #define SSL_CTX_need_tmp_RSA SSL_CTX_need_tmp_RSA
+#endif
+#if !defined(SSL_CTX_sess_get_cache_size)
 #define SSL_CTX_sess_get_cache_size SSL_CTX_sess_get_cache_size
+#endif
+#if !defined(SSL_CTX_sess_number)
 #define SSL_CTX_sess_number SSL_CTX_sess_number
+#endif
+#if !defined(SSL_CTX_sess_set_cache_size)
 #define SSL_CTX_sess_set_cache_size SSL_CTX_sess_set_cache_size
+#endif
+#if !defined(SSL_CTX_set0_chain)
 #define SSL_CTX_set0_chain SSL_CTX_set0_chain
+#endif
+#if !defined(SSL_CTX_set1_chain)
 #define SSL_CTX_set1_chain SSL_CTX_set1_chain
+#endif
+#if !defined(SSL_CTX_set1_curves)
 #define SSL_CTX_set1_curves SSL_CTX_set1_curves
+#endif
+#if !defined(SSL_CTX_set1_groups)
 #define SSL_CTX_set1_groups SSL_CTX_set1_groups
+#endif
+#if !defined(SSL_CTX_set_max_cert_list)
 #define SSL_CTX_set_max_cert_list SSL_CTX_set_max_cert_list
+#endif
+#if !defined(SSL_CTX_set_max_send_fragment)
 #define SSL_CTX_set_max_send_fragment SSL_CTX_set_max_send_fragment
+#endif
+#if !defined(SSL_CTX_set_mode)
 #define SSL_CTX_set_mode SSL_CTX_set_mode
+#endif
+#if !defined(SSL_CTX_set_msg_callback_arg)
 #define SSL_CTX_set_msg_callback_arg SSL_CTX_set_msg_callback_arg
+#endif
+#if !defined(SSL_CTX_set_options)
 #define SSL_CTX_set_options SSL_CTX_set_options
+#endif
+#if !defined(SSL_CTX_set_read_ahead)
 #define SSL_CTX_set_read_ahead SSL_CTX_set_read_ahead
+#endif
+#if !defined(SSL_CTX_set_session_cache_mode)
 #define SSL_CTX_set_session_cache_mode SSL_CTX_set_session_cache_mode
+#endif
+#if !defined(SSL_CTX_set_tlsext_servername_arg)
 #define SSL_CTX_set_tlsext_servername_arg SSL_CTX_set_tlsext_servername_arg
+#endif
+#if !defined(SSL_CTX_set_tlsext_servername_callback)
 #define SSL_CTX_set_tlsext_servername_callback \
   SSL_CTX_set_tlsext_servername_callback
+#endif
+#if !defined(SSL_CTX_set_tlsext_ticket_key_cb)
 #define SSL_CTX_set_tlsext_ticket_key_cb SSL_CTX_set_tlsext_ticket_key_cb
+#endif
+#if !defined(SSL_CTX_set_tlsext_ticket_keys)
 #define SSL_CTX_set_tlsext_ticket_keys SSL_CTX_set_tlsext_ticket_keys
+#endif
+#if !defined(SSL_CTX_set_tmp_dh)
 #define SSL_CTX_set_tmp_dh SSL_CTX_set_tmp_dh
+#endif
+#if !defined(SSL_CTX_set_tmp_ecdh)
 #define SSL_CTX_set_tmp_ecdh SSL_CTX_set_tmp_ecdh
+#endif
+#if !defined(SSL_CTX_set_tmp_rsa)
 #define SSL_CTX_set_tmp_rsa SSL_CTX_set_tmp_rsa
+#endif
+#if !defined(SSL_add0_chain_cert)
 #define SSL_add0_chain_cert SSL_add0_chain_cert
+#endif
+#if !defined(SSL_add1_chain_cert)
 #define SSL_add1_chain_cert SSL_add1_chain_cert
+#endif
+#if !defined(SSL_clear_chain_certs)
 #define SSL_clear_chain_certs SSL_clear_chain_certs
+#endif
+#if !defined(SSL_clear_mode)
 #define SSL_clear_mode SSL_clear_mode
+#endif
+#if !defined(SSL_clear_options)
 #define SSL_clear_options SSL_clear_options
+#endif
+#if !defined(SSL_get0_certificate_types)
 #define SSL_get0_certificate_types SSL_get0_certificate_types
+#endif
+#if !defined(SSL_get0_chain_certs)
 #define SSL_get0_chain_certs SSL_get0_chain_certs
+#endif
+#if !defined(SSL_get_max_cert_list)
 #define SSL_get_max_cert_list SSL_get_max_cert_list
+#endif
+#if !defined(SSL_get_mode)
 #define SSL_get_mode SSL_get_mode
+#endif
+#if !defined(SSL_get_negotiated_group)
 #define SSL_get_negotiated_group SSL_get_negotiated_group
+#endif
+#if !defined(SSL_get_options)
 #define SSL_get_options SSL_get_options
+#endif
+#if !defined(SSL_get_secure_renegotiation_support)
 #define SSL_get_secure_renegotiation_support \
   SSL_get_secure_renegotiation_support
+#endif
+#if !defined(SSL_need_tmp_RSA)
 #define SSL_need_tmp_RSA SSL_need_tmp_RSA
+#endif
+#if !defined(SSL_num_renegotiations)
 #define SSL_num_renegotiations SSL_num_renegotiations
+#endif
+#if !defined(SSL_session_reused)
 #define SSL_session_reused SSL_session_reused
+#endif
+#if !defined(SSL_set0_chain)
 #define SSL_set0_chain SSL_set0_chain
+#endif
+#if !defined(SSL_set1_chain)
 #define SSL_set1_chain SSL_set1_chain
+#endif
+#if !defined(SSL_set1_curves)
 #define SSL_set1_curves SSL_set1_curves
+#endif
+#if !defined(SSL_set1_groups)
 #define SSL_set1_groups SSL_set1_groups
+#endif
+#if !defined(SSL_set_max_cert_list)
 #define SSL_set_max_cert_list SSL_set_max_cert_list
+#endif
+#if !defined(SSL_set_max_send_fragment)
 #define SSL_set_max_send_fragment SSL_set_max_send_fragment
+#endif
+#if !defined(SSL_set_mode)
 #define SSL_set_mode SSL_set_mode
+#endif
+#if !defined(SSL_set_msg_callback_arg)
 #define SSL_set_msg_callback_arg SSL_set_msg_callback_arg
+#endif
+#if !defined(SSL_set_mtu)
 #define SSL_set_mtu SSL_set_mtu
+#endif
+#if !defined(SSL_set_options)
 #define SSL_set_options SSL_set_options
+#endif
+#if !defined(SSL_set_tlsext_host_name)
 #define SSL_set_tlsext_host_name SSL_set_tlsext_host_name
+#endif
+#if !defined(SSL_set_tmp_dh)
 #define SSL_set_tmp_dh SSL_set_tmp_dh
+#endif
+#if !defined(SSL_set_tmp_ecdh)
 #define SSL_set_tmp_ecdh SSL_set_tmp_ecdh
+#endif
+#if !defined(SSL_set_tmp_rsa)
 #define SSL_set_tmp_rsa SSL_set_tmp_rsa
+#endif
+#if !defined(SSL_total_renegotiations)
 #define SSL_total_renegotiations SSL_total_renegotiations
-
-#endif  // !defined(BORINGSSL_PREFIX)
+#endif
 
 
 #if defined(__cplusplus)
@@ -6612,6 +6984,12 @@ BSSL_NAMESPACE_END
 #define SSL_R_INVALID_TRUST_ANCHOR_LIST 328
 #define SSL_R_INVALID_CERTIFICATE_PROPERTY_LIST 329
 #define SSL_R_DUPLICATE_GROUP 330
+#define SSL_R_INVALID_PSK_FOR_CONNECTION 331
+#define SSL_R_NO_SUPPORTED_PSK_MODE 332
+#define SSL_R_INVALID_CERT_TYPES_LIST 333
+#define SSL_R_UNSUPPORTED_CERTIFICATE 334
+#define SSL_R_MISSING_KEY 335
+#define SSL_R_INVALID_RAW_PUBLIC_KEY 336
 #define SSL_R_SSLV3_ALERT_CLOSE_NOTIFY 1000
 #define SSL_R_SSLV3_ALERT_UNEXPECTED_MESSAGE 1010
 #define SSL_R_SSLV3_ALERT_BAD_RECORD_MAC 1020
@@ -6646,6 +7024,5 @@ BSSL_NAMESPACE_END
 #define SSL_R_TLSV1_ALERT_CERTIFICATE_REQUIRED 1116
 #define SSL_R_TLSV1_ALERT_NO_APPLICATION_PROTOCOL 1120
 #define SSL_R_TLSV1_ALERT_ECH_REQUIRED 1121
-#define SSL_R_PAKE_AND_KEY_SHARE_NOT_ALLOWED 1122
 
 #endif  // OPENSSL_HEADER_SSL_H

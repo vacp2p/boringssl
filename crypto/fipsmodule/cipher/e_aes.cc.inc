@@ -86,6 +86,7 @@ static int aes_init_key(EVP_CIPHER_CTX *ctx, const uint8_t *key,
       if (mode == EVP_CIPH_CBC_MODE) {
         dat->stream.cbc = aes_hw_cbc_encrypt;
       }
+#if defined(BSAES)
     } else if (bsaes_capable() && mode == EVP_CIPH_CBC_MODE) {
       assert(vpaes_capable());
       ret = vpaes_set_decrypt_key(key, ctx->key_len * 8, &dat->ks.ks);
@@ -95,6 +96,7 @@ static int aes_init_key(EVP_CIPHER_CTX *ctx, const uint8_t *key,
       // If |dat->stream.cbc| is provided, |dat->block| is never used.
       dat->block = nullptr;
       dat->stream.cbc = bsaes_cbc_encrypt;
+#endif
     } else if (vpaes_capable()) {
       ret = vpaes_set_decrypt_key(key, ctx->key_len * 8, &dat->ks.ks);
       dat->block = vpaes_decrypt;
@@ -265,16 +267,32 @@ static int aes_gcm_ctrl(EVP_CIPHER_CTX *c, int type, int arg, void *ptr) {
       if (arg <= 0) {
         return 0;
       }
+      if (arg == gctx->ivlen) {
+        // Some applications set the IV and then do a no-op length change,
+        // expecting the IV to remain set.
+        return 1;
+      }
 
-      // Allocate memory for IV if needed
-      if (arg > EVP_MAX_IV_LENGTH && arg > gctx->ivlen) {
+      // Clear any existing IV or partial IV that may have previously been set.
+      gctx->iv_set = 0;
+      gctx->iv_gen = 0;
+
+      if (arg <= EVP_MAX_IV_LENGTH) {
+        // IVs less than EVP_MAX_IV_LENGTH are stored in the built-in buffer.
+        if (gctx->iv != c->iv) {
+          OPENSSL_free(gctx->iv);
+          gctx->iv = c->iv;
+        }
+      } else if (arg > gctx->ivlen) {
+        // The existing buffer isn't large enough.
+        uint8_t *new_iv = static_cast<uint8_t *>(OPENSSL_malloc(arg));
+        if (new_iv == nullptr) {
+          return 0;
+        }
         if (gctx->iv != c->iv) {
           OPENSSL_free(gctx->iv);
         }
-        gctx->iv = reinterpret_cast<uint8_t *>(OPENSSL_malloc(arg));
-        if (!gctx->iv) {
-          return 0;
-        }
+        gctx->iv = new_iv;
       }
       gctx->ivlen = arg;
       return 1;

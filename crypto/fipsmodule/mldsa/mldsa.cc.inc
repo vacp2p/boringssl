@@ -31,6 +31,14 @@
 
 using namespace bssl;
 
+#if defined(BORINGSSL_FIPS)
+
+DEFINE_STATIC_ONCE(g_mldsa_keygen_self_test_once)
+DEFINE_STATIC_ONCE(g_mldsa_sign_self_test_once)
+DEFINE_STATIC_ONCE(g_mldsa_verify_self_test_once)
+
+#endif
+
 namespace mldsa {
 namespace {
 
@@ -333,7 +341,7 @@ uint32_t mod_sub(uint32_t a, uint32_t b) {
   uint32_t r = a - b;
   // return r < 0 ? r + kPrime : r;
   uint32_t mask = 0u - (r >> 31);
-  // See |reduce_once| for which this does not have a value barrier.
+  // See |reduce_once| for why this does not have a value barrier.
   return (mask & (r + kPrime)) | (~mask & r);
 }
 
@@ -2132,13 +2140,9 @@ static int keygen_self_test() {
     return 0;
   }
 
-  static_assert(sizeof(values->pub_bytes) == sizeof(kExpectedPublicKey));
-  static_assert(sizeof(values->priv_bytes) == sizeof(kExpectedPrivateKey));
   if (!BORINGSSL_check_test(kExpectedPublicKey, values->pub_bytes,
-                            sizeof(values->pub_bytes),
                             "ML-DSA keygen public key") ||
       !BORINGSSL_check_test(kExpectedPrivateKey, values->priv_bytes,
-                            sizeof(values->priv_bytes),
                             "ML-DSA keygen private key")) {
     return 0;
   }
@@ -2169,9 +2173,8 @@ static int sign_self_test() {
                                         randomizer)) {
     return 0;
   }
-  static_assert(sizeof(kExpectedCase1Signature) == sizeof(values->sig));
   if (!BORINGSSL_check_test(kExpectedCase1Signature, values->sig,
-                            sizeof(values->sig), "ML-DSA sign case 1")) {
+                            "ML-DSA sign case 1")) {
     return 0;
   }
 
@@ -2182,9 +2185,8 @@ static int sign_self_test() {
                                         randomizer)) {
     return 0;
   }
-  static_assert(sizeof(kExpectedCase2Signature) == sizeof(values->sig));
   if (!BORINGSSL_check_test(kExpectedCase2Signature, values->sig,
-                            sizeof(values->sig), "ML-DSA sign case 2")) {
+                            "ML-DSA sign case 2")) {
     return 0;
   }
 
@@ -2239,8 +2241,6 @@ int check_key(const private_key<K, L> *priv) {
 
 #if defined(BORINGSSL_FIPS)
 
-DEFINE_STATIC_ONCE(g_mldsa_keygen_self_test_once)
-
 void ensure_keygen_self_test() {
   CRYPTO_once(g_mldsa_keygen_self_test_once_bss_get(), []() {
     if (!keygen_self_test()) {
@@ -2249,8 +2249,6 @@ void ensure_keygen_self_test() {
   });
 }
 
-DEFINE_STATIC_ONCE(g_mldsa_sign_self_test_once)
-
 void ensure_sign_self_test() {
   CRYPTO_once(g_mldsa_sign_self_test_once_bss_get(), []() {
     if (!sign_self_test()) {
@@ -2258,8 +2256,6 @@ void ensure_sign_self_test() {
     }
   });
 }
-
-DEFINE_STATIC_ONCE(g_mldsa_verify_self_test_once)
 
 void ensure_verify_self_test() {
   CRYPTO_once(g_mldsa_verify_self_test_once_bss_get(), []() {
@@ -2556,6 +2552,7 @@ bcm_status bssl::BCM_mldsa87_generate_key(
     uint8_t out_encoded_public_key[MLDSA87_PUBLIC_KEY_BYTES],
     uint8_t out_seed[MLDSA_SEED_BYTES], MLDSA87_private_key *out_private_key) {
   BCM_rand_bytes(out_seed, MLDSA_SEED_BYTES);
+  CONSTTIME_SECRET(out_seed, MLDSA_SEED_BYTES);
   return BCM_mldsa87_generate_key_external_entropy(out_encoded_public_key,
                                                    out_private_key, out_seed);
 }
@@ -2662,6 +2659,7 @@ bcm_status bssl::BCM_mldsa87_sign(
   BSSL_CHECK(context_len <= 255);
   uint8_t randomizer[BCM_MLDSA_SIGNATURE_RANDOMIZER_BYTES];
   BCM_rand_bytes(randomizer, sizeof(randomizer));
+  CONSTTIME_SECRET(randomizer, sizeof(randomizer));
 
   const uint8_t context_prefix[2] = {0, static_cast<uint8_t>(context_len)};
   return BCM_mldsa87_sign_internal(
@@ -2795,6 +2793,7 @@ bcm_status bssl::BCM_mldsa44_generate_key(
     uint8_t out_encoded_public_key[MLDSA44_PUBLIC_KEY_BYTES],
     uint8_t out_seed[MLDSA_SEED_BYTES], MLDSA44_private_key *out_private_key) {
   BCM_rand_bytes(out_seed, MLDSA_SEED_BYTES);
+  CONSTTIME_SECRET(out_seed, MLDSA_SEED_BYTES);
   return BCM_mldsa44_generate_key_external_entropy(out_encoded_public_key,
                                                    out_private_key, out_seed);
 }
@@ -2901,6 +2900,7 @@ bcm_status bssl::BCM_mldsa44_sign(
   BSSL_CHECK(context_len <= 255);
   uint8_t randomizer[BCM_MLDSA_SIGNATURE_RANDOMIZER_BYTES];
   BCM_rand_bytes(randomizer, sizeof(randomizer));
+  CONSTTIME_SECRET(randomizer, sizeof(randomizer));
 
   const uint8_t context_prefix[2] = {0, static_cast<uint8_t>(context_len)};
   return BCM_mldsa44_sign_internal(
@@ -3000,7 +3000,7 @@ int bssl::BCM_mldsa44_public_keys_equal(const MLDSA44_public_key *a,
                         sizeof(a_pub->public_key_hash)) == 0;
 }
 
-int boringssl_self_test_mldsa() {
+int bssl::boringssl_self_test_mldsa() {
   return mldsa::fips::keygen_self_test() && mldsa::fips::sign_self_test() &&
          mldsa::fips::verify_self_test();
 }

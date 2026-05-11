@@ -57,7 +57,7 @@ void X509_NAME_ENTRY_free(X509_NAME_ENTRY *entry) {
   if (entry != nullptr) {
     ASN1_OBJECT_free(entry->object);
     asn1_string_cleanup(&entry->value);
-    OPENSSL_free(entry);
+    Delete(entry);
   }
 }
 
@@ -99,9 +99,13 @@ static int i2d_x509_name_entry(const X509_NAME_ENTRY *entry, uint8_t **out) {
   });
 }
 
+BSSL_NAMESPACE_BEGIN
+
 IMPLEMENT_EXTERN_ASN1_SIMPLE(X509_NAME_ENTRY, X509_NAME_ENTRY_new,
                              X509_NAME_ENTRY_free, CBS_ASN1_SEQUENCE,
                              x509_parse_name_entry, i2d_x509_name_entry)
+
+BSSL_NAMESPACE_END
 
 X509_NAME_ENTRY *X509_NAME_ENTRY_dup(const X509_NAME_ENTRY *entry) {
   ScopedCBB cbb;
@@ -118,41 +122,34 @@ X509_NAME_ENTRY *X509_NAME_ENTRY_dup(const X509_NAME_ENTRY *entry) {
   return copy.release();
 }
 
-static void x509_name_cache_free(X509_NAME_CACHE *cache) {
-  if (cache != nullptr) {
-    OPENSSL_free(cache->canon);
-    OPENSSL_free(cache->der);
-    OPENSSL_free(cache);
-  }
+void bssl::x509_name_init(X509_NAME *name) {
+  auto *impl = FromOpaque(name);
+  OPENSSL_memset(impl, 0, sizeof(*impl));
 }
 
-void x509_name_init(X509_NAME *name) {
-  OPENSSL_memset(name, 0, sizeof(X509_NAME));
+void bssl::x509_name_cleanup(X509_NAME *name) {
+  auto *impl = FromOpaque(name);
+  sk_X509_NAME_ENTRY_pop_free(impl->entries, X509_NAME_ENTRY_free);
+  Delete(impl->cache.exchange(nullptr));
 }
 
-void x509_name_cleanup(X509_NAME *name) {
-  sk_X509_NAME_ENTRY_pop_free(name->entries, X509_NAME_ENTRY_free);
-  x509_name_cache_free(name->cache.exchange(nullptr));
-}
-
-X509_NAME *X509_NAME_new() {
-  return static_cast<X509_NAME *>(OPENSSL_zalloc(sizeof(X509_NAME)));
-}
+X509_NAME *X509_NAME_new() { return New<X509Name>(); }
 
 void X509_NAME_free(X509_NAME *name) {
   if (name != nullptr) {
     x509_name_cleanup(name);
-    OPENSSL_free(name);
+    Delete(FromOpaque(name));
   }
 }
 
-int x509_parse_name(CBS *cbs, X509_NAME *out) {
+int bssl::x509_parse_name(CBS *cbs, X509_NAME *out) {
+  auto *impl = FromOpaque(out);
   // Reset the old state.
-  x509_name_cleanup(out);
-  x509_name_init(out);
+  x509_name_cleanup(impl);
+  x509_name_init(impl);
 
-  out->entries = sk_X509_NAME_ENTRY_new_null();
-  if (out->entries == nullptr) {
+  impl->entries = sk_X509_NAME_ENTRY_new_null();
+  if (impl->entries == nullptr) {
     return 0;
   }
   CBS seq, rdn;
@@ -175,30 +172,31 @@ int x509_parse_name(CBS *cbs, X509_NAME *out) {
         return 0;
       }
       entry->set = set;
-      if (!PushToStack(out->entries, std::move(entry))) {
+      if (!PushToStack(impl->entries, std::move(entry))) {
         return 0;
       }
     }
   }
 
   // While we are single-threaded, also fill in the cached state.
-  return x509_name_get_cache(out) != nullptr;
+  return x509_name_get_cache(impl) != nullptr;
 }
 
 static int x509_marshal_name_entries(CBB *out, const X509_NAME *name,
                                      int canonicalize) {
-  if (sk_X509_NAME_ENTRY_num(name->entries) == 0) {
+  auto *impl = FromOpaque(name);
+  if (sk_X509_NAME_ENTRY_num(impl->entries) == 0) {
     return 1;
   }
 
   // Bootstrap the first RDN.
-  int set = sk_X509_NAME_ENTRY_value(name->entries, 0)->set;
+  int set = sk_X509_NAME_ENTRY_value(impl->entries, 0)->set;
   CBB rdn;
   if (!CBB_add_asn1(out, &rdn, CBS_ASN1_SET)) {
     return 0;
   }
 
-  for (const X509_NAME_ENTRY *entry : name->entries) {
+  for (const X509_NAME_ENTRY *entry : impl->entries) {
     if (entry->set != set) {
       // Flush the previous RDN and start a new one.
       if (!CBB_flush_asn1_set_of(&rdn) ||
@@ -215,58 +213,56 @@ static int x509_marshal_name_entries(CBB *out, const X509_NAME *name,
   return CBB_flush_asn1_set_of(&rdn) && CBB_flush(out);
 }
 
-const X509_NAME_CACHE *x509_name_get_cache(const X509_NAME *name) {
-  const X509_NAME_CACHE *cache = name->cache.load();
+const X509_NAME_CACHE *bssl::x509_name_get_cache(const X509_NAME *name) {
+  auto *impl = FromOpaque(name);
+  const X509_NAME_CACHE *cache = impl->cache.load();
   if (cache != nullptr) {
     return cache;
   }
 
-  X509_NAME_CACHE *new_cache =
-      static_cast<X509_NAME_CACHE *>(OPENSSL_zalloc(sizeof(X509_NAME_CACHE)));
+  UniquePtr<X509_NAME_CACHE> new_cache = MakeUnique<X509_NAME_CACHE>();
   // Cache the DER encoding, including the outer TLV.
   ScopedCBB cbb;
   CBB seq;
   if (!CBB_init(cbb.get(), 16) ||
       !CBB_add_asn1(cbb.get(), &seq, CBS_ASN1_SEQUENCE) ||
-      !x509_marshal_name_entries(&seq, name, /*canonicalize=*/0) ||
-      !CBB_finish(cbb.get(), &new_cache->der, &new_cache->der_len)) {
-    x509_name_cache_free(new_cache);
+      !x509_marshal_name_entries(&seq, impl, /*canonicalize=*/0) ||
+      !CBBFinishArray(cbb.get(), &new_cache->der)) {
     return nullptr;
   }
   // Cache the canonicalized form, without the outer TLV.
   if (!CBB_init(cbb.get(), 16) ||
-      !x509_marshal_name_entries(cbb.get(), name, /*canonicalize=*/1) ||
-      !CBB_finish(cbb.get(), &new_cache->canon, &new_cache->canon_len)) {
-    x509_name_cache_free(new_cache);
+      !x509_marshal_name_entries(cbb.get(), impl, /*canonicalize=*/1) ||
+      !CBBFinishArray(cbb.get(), &new_cache->canon)) {
     return nullptr;
   }
 
   X509_NAME_CACHE *expected = nullptr;
-  if (name->cache.compare_exchange_strong(expected, new_cache)) {
-    // We won the race. |name| now owns |new_cache|.
-    return new_cache;
+  if (impl->cache.compare_exchange_strong(expected, new_cache.get())) {
+    // We won the race. |impl| now owns |new_cache|.
+    return new_cache.release();
   }
 
   // Some other thread installed a (presumably identical) cache. Release the one
   // we made and return the winning one.
   assert(expected != nullptr);
-  x509_name_cache_free(new_cache);
   return expected;
 }
 
-void x509_name_invalidate_cache(X509_NAME *name) {
-  x509_name_cache_free(name->cache.exchange(nullptr));
+void bssl::x509_name_invalidate_cache(X509_NAME *name) {
+  auto *impl = FromOpaque(name);
+  Delete(impl->cache.exchange(nullptr));
 }
 
-int x509_marshal_name(CBB *out, const X509_NAME *in) {
+int bssl::x509_marshal_name(CBB *out, const X509_NAME *in) {
   const X509_NAME_CACHE *cache = x509_name_get_cache(in);
   if (cache == nullptr) {
     return 0;
   }
-  return CBB_add_bytes(out, cache->der, cache->der_len);
+  return CBB_add_bytes(out, cache->der.data(), cache->der.size());
 }
 
-int x509_name_copy(X509_NAME *dst, const X509_NAME *src) {
+int bssl::x509_name_copy(X509_NAME *dst, const X509_NAME *src) {
   const X509_NAME_CACHE *cache = x509_name_get_cache(src);
   if (cache == nullptr) {
     return 0;
@@ -278,8 +274,7 @@ int x509_name_copy(X509_NAME *dst, const X509_NAME *src) {
   if (dst == src) {
     return 1;
   }
-  CBS cbs;
-  CBS_init(&cbs, cache->der, cache->der_len);
+  CBS cbs(cache->der);
   if (!x509_parse_name(&cbs, dst)) {
     return 0;
   }
@@ -314,20 +309,21 @@ int i2d_X509_NAME(const X509_NAME *in, uint8_t **outp) {
   if (cache == nullptr) {
     return -1;
   }
-  if (cache->der_len > INT_MAX) {
+  if (cache->der.size() > INT_MAX) {
     OPENSSL_PUT_ERROR(X509, ERR_R_OVERFLOW);
     return -1;
   }
-  int len = static_cast<int>(cache->der_len);
+  int len = static_cast<int>(cache->der.size());
   if (outp == nullptr) {
     return len;
   }
   if (*outp == nullptr) {
-    *outp = static_cast<uint8_t*>(OPENSSL_memdup(cache->der, cache->der_len));
+    *outp = static_cast<uint8_t *>(
+        OPENSSL_memdup(cache->der.data(), cache->der.size()));
     return *outp != nullptr ? len : -1;
   }
-  OPENSSL_memcpy(*outp, cache->der, cache->der_len);
-  *outp += cache->der_len;
+  OPENSSL_memcpy(*outp, cache->der.data(), cache->der.size());
+  *outp += cache->der.size();
   return len;
 }
 
@@ -423,10 +419,10 @@ int X509_NAME_get0_der(const X509_NAME *nm, const unsigned char **out_der,
     return 0;
   }
   if (out_der != nullptr) {
-    *out_der = cache->der;
+    *out_der = cache->der.data();
   }
   if (out_der_len != nullptr) {
-    *out_der_len = cache->der_len;
+    *out_der_len = cache->der.size();
   }
   return 1;
 }

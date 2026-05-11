@@ -24,6 +24,9 @@
 #include <openssl/base.h>
 #include <openssl/span.h>
 
+
+BSSL_NAMESPACE_BEGIN
+
 struct FileCloser {
   void operator()(FILE *file) { fclose(file); }
 };
@@ -123,6 +126,7 @@ std::string_view TrimSpace(std::string_view s);
 
 bool ReadAll(std::vector<uint8_t> *out, FILE *in);
 bool WriteToFile(const std::string &path, bssl::Span<const uint8_t> in);
+UniquePtr<EVP_PKEY> LoadPrivateKeyFile(const std::string &file);
 
 bool Ciphers(const std::vector<std::string> &args);
 bool Client(const std::vector<std::string> &args);
@@ -149,5 +153,6 @@ extern const size_t kDERRSAPrivate3072Len;
 extern const uint8_t kDERRSAPrivate4096[];
 extern const size_t kDERRSAPrivate4096Len;
 
+BSSL_NAMESPACE_END
 
 #endif  // !OPENSSL_HEADER_TOOL_INTERNAL_H

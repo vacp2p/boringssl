@@ -24,9 +24,14 @@ use alloc::{fmt::Debug, vec::Vec};
 use core::ptr::{null, null_mut};
 
 /// An elliptic curve.
-pub trait Curve: Debug {
-    #[doc(hidden)]
-    fn group(_: sealed::Sealed) -> Group;
+///
+/// ## Safety
+/// The current EC implementation are thread-safe.
+/// Implementers should make sure that further additions to the curve family
+/// should respect thread-safety, too.
+pub trait Curve: Debug + Sync + Send + sealed::Sealed {
+    /// Return the underlying [`Group`] of the curve
+    fn group() -> Group;
 
     /// Hash `data` using a hash function suitable for the curve. (I.e.
     /// SHA-256 for P-256 and SHA-384 for P-384.)
@@ -38,8 +43,10 @@ pub trait Curve: Debug {
 #[derive(Debug)]
 pub struct P256;
 
+impl sealed::Sealed for P256 {}
+
 impl Curve for P256 {
-    fn group(_: sealed::Sealed) -> Group {
+    fn group() -> Group {
         Group::P256
     }
 
@@ -52,8 +59,10 @@ impl Curve for P256 {
 #[derive(Debug)]
 pub struct P384;
 
+impl sealed::Sealed for P384 {}
+
 impl Curve for P384 {
-    fn group(_: sealed::Sealed) -> Group {
+    fn group() -> Group {
         Group::P384
     }
 
@@ -62,7 +71,7 @@ impl Curve for P384 {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 #[doc(hidden)]
 pub enum Group {
     P256,
@@ -283,7 +292,7 @@ impl Point {
 //
 // An `EC_POINT` can be used concurrently from multiple threads so long as no
 // mutating operations are performed. The mutating operations used here are
-// `EC_POINT_mul` and `EC_POINT_oct2point` (which can be observed by setting
+// `EC_POINT_mul` and `EC_POINT_oct2point`, which can be observed by setting
 // `point` to be `*const` in the struct and seeing what errors trigger.
 //
 // Both those operations are done internally, however, before a `Point` is
@@ -378,7 +387,9 @@ impl Key {
         }
     }
 
-    /// Parses an ECPrivateKey structure (from RFC 5915).
+    /// Parses an ECPrivateKey structure from [RFC 5915].
+    ///
+    /// [RFC 5915]: <https://datatracker.ietf.org/doc/html/rfc5915>
     pub fn from_der_ec_private_key(group: Group, der: &[u8]) -> Option<Self> {
         let key = parse_with_cbs(
             der,
@@ -392,37 +403,73 @@ impl Key {
         Some(Self(key))
     }
 
-    /// Serializes this private key as an ECPrivateKey structure from RFC 5915.
+    /// Parses an ECPrivateKey structure from [RFC 5915], whose curve is specified by
+    /// the `ECParameters`.
+    ///
+    /// Unless the curve group is one of the variants of [`Group`], this method returns [`None`].
+    ///
+    /// [RFC 5915]: <https://datatracker.ietf.org/doc/html/rfc5915>
+    pub fn from_der_ec_private_key_with_curve_names(der: &[u8]) -> Option<Self> {
+        let key = parse_with_cbs(
+            der,
+            // Safety: in this context, `key` is the non-null result of
+            // `EC_KEY_parse_private_key`.
+            |key| unsafe { bssl_sys::EC_KEY_free(key) },
+            // Safety: `cbs` is valid per `parse_with_cbs`.
+            |cbs| unsafe { bssl_sys::EC_KEY_parse_private_key(cbs, null()) },
+        )?;
+        let key = Self(key);
+        if key.get_group().is_none() {
+            None
+        } else {
+            Some(key)
+        }
+    }
+
+    /// Serializes this private key as an ECPrivateKey structure from [RFC 5915].
+    ///
+    /// This method also **serialise** known curve names as `ECParameters`.
+    ///
+    /// [RFC 5915]: <https://datatracker.ietf.org/doc/html/rfc5915>
     pub fn to_der_ec_private_key(&self) -> Buffer {
         cbb_to_buffer(64, |cbb| unsafe {
             // Safety: the `EC_KEY` is always valid so `EC_KEY_marshal_private_key`
             // should only fail if out of memory, which this crate doesn't handle.
-            assert_eq!(
-                1,
-                bssl_sys::EC_KEY_marshal_private_key(
-                    cbb,
-                    self.0,
-                    bssl_sys::EC_PKEY_NO_PARAMETERS as u32
-                )
-            );
+            assert_eq!(1, bssl_sys::EC_KEY_marshal_private_key(cbb, self.0, 0));
         })
     }
 
     /// Parses a PrivateKeyInfo structure (from RFC 5208).
     pub fn from_der_private_key_info(group: Group, der: &[u8]) -> Option<Self> {
         let alg = group.as_evp_pkey_alg();
-        let mut pkey =
-            scoped::EvpPkey::from_der_private_key_info(der, core::slice::from_ref(&alg))?;
-        let ec_key = unsafe { bssl_sys::EVP_PKEY_get1_EC_KEY(pkey.as_ffi_ptr()) };
-        // We only passed in one allowed algorithm, an EC algorithm.
-        assert!(!ec_key.is_null());
-        // Safety: `ec_key` is now owned by this function.
-        let parsed_group = unsafe { bssl_sys::EC_KEY_get0_group(ec_key) };
+        let pkey = scoped::EvpPkey::from_der_private_key_info(der, core::slice::from_ref(&alg))?;
+        // Safety: the pkey is not aliased
+        let ec_key = Self::from_evp_pkey(pkey)?;
         // We only passed in one allowed algorithm, this EC group.
-        assert!(parsed_group == group.as_ffi_ptr());
-        // Safety: `EVP_PKEY_get1_EC_KEY` returned ownership, which we can move
-        // into the returned object.
+        (ec_key.get_group()? == group).then_some(ec_key)
+    }
+
+    // Safety: the pkey must not be aliased via `as_ffi_ptr`
+    pub(crate) fn from_evp_pkey(mut pkey: scoped::EvpPkey) -> Option<Self> {
+        let ec_key = unsafe { bssl_sys::EVP_PKEY_get1_EC_KEY(pkey.as_ffi_ptr()) };
+        if ec_key.is_null() {
+            return None;
+        }
+        // Safety: `EVP_PKEY_get1_EC_KEY` returned owned key, which we can move
+        // into the returned object and whose lifetime is independent of the EVP pkey.
         Some(Self(ec_key))
+    }
+
+    pub(crate) fn get_group(&self) -> Option<Group> {
+        // Safety: we own the `EC_KEY`
+        let id = unsafe { bssl_sys::EC_KEY_get0_group(self.0) };
+        if id == Group::P256.as_ffi_ptr() {
+            Some(Group::P256)
+        } else if id == Group::P384.as_ffi_ptr() {
+            Some(Group::P384)
+        } else {
+            None
+        }
     }
 
     /// Serializes this private key as a PrivateKeyInfo structure from RFC 5208.
@@ -508,6 +555,15 @@ impl Drop for Key {
         // Safety: `self.0` must be valid because only valid `Key`s can
         // be constructed.
         unsafe { bssl_sys::EC_KEY_free(self.0) }
+    }
+}
+
+impl Clone for Key {
+    fn clone(&self) -> Self {
+        unsafe {
+            bssl_sys::EC_KEY_up_ref(self.0);
+        }
+        Self(self.0)
     }
 }
 
@@ -686,12 +742,13 @@ mod test {
         );
     }
 
-    fn test_key_format<Serialize, Parse>(serialize_func: Serialize, parse_func: Parse)
+    fn test_key_format<Serialize, Parse>(group: Group, serialize_func: Serialize, parse_func: Parse)
     where
         Serialize: FnOnce(&Key) -> Buffer,
         Parse: Fn(&[u8]) -> Option<Key>,
     {
-        let key = Key::generate(Group::P256);
+        let key = Key::generate(group);
+        assert_eq!(key.get_group().unwrap(), group);
 
         let vec = serialize_func(&key).as_ref().to_vec();
         let key2 = parse_func(vec.as_slice()).unwrap();
@@ -699,6 +756,7 @@ mod test {
             key.to_x962_uncompressed().as_ref(),
             key2.to_x962_uncompressed().as_ref()
         );
+        assert_eq!(key.get_group(), key2.get_group());
 
         assert!(parse_func(&vec.as_slice()[0..16]).is_none());
         assert!(parse_func(b"").is_none());
@@ -706,25 +764,39 @@ mod test {
 
     #[test]
     fn der_ec_private_key() {
-        test_key_format(
-            |key| key.to_der_ec_private_key(),
-            |buf| Key::from_der_ec_private_key(Group::P256, buf),
-        );
+        for group in [Group::P256, Group::P384] {
+            test_key_format(
+                group,
+                |key| key.to_der_ec_private_key(),
+                |buf| Key::from_der_ec_private_key(group, buf),
+            );
+            test_key_format(
+                group,
+                |key| key.to_der_ec_private_key(),
+                |buf| Key::from_der_ec_private_key_with_curve_names(buf),
+            );
+        }
     }
 
     #[test]
     fn der_private_key_info() {
-        test_key_format(
-            |key| key.to_der_private_key_info(),
-            |buf| Key::from_der_private_key_info(Group::P256, buf),
-        );
+        for group in [Group::P256, Group::P384] {
+            test_key_format(
+                group,
+                |key| key.to_der_private_key_info(),
+                |buf| Key::from_der_private_key_info(group, buf),
+            );
+        }
     }
 
     #[test]
     fn big_endian() {
-        test_key_format(
-            |key| key.to_big_endian(),
-            |buf| Key::from_big_endian(Group::P256, buf),
-        );
+        for group in [Group::P256, Group::P384] {
+            test_key_format(
+                group,
+                |key| key.to_big_endian(),
+                |buf| Key::from_big_endian(group, buf),
+            );
+        }
     }
 }

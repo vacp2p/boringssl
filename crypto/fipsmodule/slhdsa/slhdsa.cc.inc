@@ -31,6 +31,14 @@
 
 using namespace bssl;
 
+#if defined(BORINGSSL_FIPS)
+
+DEFINE_STATIC_ONCE(g_slhdsa_keygen_self_test_once)
+DEFINE_STATIC_ONCE(g_slhdsa_sign_self_test_once)
+DEFINE_STATIC_ONCE(g_slhdsa_verify_self_test_once)
+
+#endif
+
 namespace {
 
 namespace fips {
@@ -226,12 +234,8 @@ static int keygen_self_test() {
   uint8_t priv[BCM_SLHDSA_SHA2_128S_PRIVATE_KEY_BYTES];
   generate_key_from_seed_no_self_test(&kSLHDSAConfigSHA2_128s, pub, priv, seed);
 
-  static_assert(sizeof(kExpectedPublicKey) == sizeof(pub));
-  static_assert(sizeof(kExpectedPrivateKey) == sizeof(priv));
-  if (!BORINGSSL_check_test(kExpectedPublicKey, pub, sizeof(pub),
-                            "SLH-DSA public key") ||
-      !BORINGSSL_check_test(kExpectedPrivateKey, priv, sizeof(priv),
-                            "SLH-DSA private key")) {
+  if (!BORINGSSL_check_test(kExpectedPublicKey, pub, "SLH-DSA public key") ||
+      !BORINGSSL_check_test(kExpectedPrivateKey, priv, "SLH-DSA private key")) {
     return 0;
   }
 
@@ -247,8 +251,7 @@ static int sign_self_test() {
   uint8_t digest[32];
   SHA256(sig, sizeof(sig), digest);
 
-  static_assert(sizeof(kExpectedSignatureSHA256) == sizeof(digest));
-  if (!BORINGSSL_check_test(kExpectedSignatureSHA256, digest, sizeof(digest),
+  if (!BORINGSSL_check_test(kExpectedSignatureSHA256, digest,
                             "SLH-DSA signature")) {
     return 0;
   }
@@ -265,8 +268,6 @@ static int verify_self_test() {
 
 #if defined(BORINGSSL_FIPS)
 
-DEFINE_STATIC_ONCE(g_slhdsa_keygen_self_test_once)
-
 void ensure_keygen_self_test() {
   CRYPTO_once(g_slhdsa_keygen_self_test_once_bss_get(), []() {
     if (!keygen_self_test()) {
@@ -275,8 +276,6 @@ void ensure_keygen_self_test() {
   });
 }
 
-DEFINE_STATIC_ONCE(g_slhdsa_sign_self_test_once)
-
 void ensure_sign_self_test() {
   CRYPTO_once(g_slhdsa_sign_self_test_once_bss_get(), []() {
     if (!sign_self_test()) {
@@ -284,8 +283,6 @@ void ensure_sign_self_test() {
     }
   });
 }
-
-DEFINE_STATIC_ONCE(g_slhdsa_verify_self_test_once)
 
 void ensure_verify_self_test() {
   CRYPTO_once(g_slhdsa_verify_self_test_once_bss_get(), []() {
@@ -687,7 +684,7 @@ bcm_status bssl::BCM_slhdsa_shake_256f_verify_internal(
                          msg_len);
 }
 
-int boringssl_self_test_slhdsa() {
+int bssl::boringssl_self_test_slhdsa() {
   return fips::keygen_self_test() && fips::sign_self_test() &&
          fips::verify_self_test();
 }

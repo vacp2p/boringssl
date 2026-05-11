@@ -23,42 +23,27 @@
 #include <stdlib.h>
 #include <string.h>
 
-void CRYPTO_MUTEX_init(CRYPTO_MUTEX *lock) {
-  if (pthread_rwlock_init(lock, nullptr) != 0) {
-    abort();
-  }
+
+BSSL_NAMESPACE_BEGIN
+
+void StaticMutex::LockRead() { BSSL_CHECK(pthread_rwlock_rdlock(&lock_) == 0); }
+
+void StaticMutex::UnlockRead() {
+  BSSL_CHECK(pthread_rwlock_unlock(&lock_) == 0);
 }
 
-void CRYPTO_MUTEX_lock_read(CRYPTO_MUTEX *lock) {
-  if (pthread_rwlock_rdlock(lock) != 0) {
-    abort();
-  }
+void StaticMutex::LockWrite() {
+  BSSL_CHECK(pthread_rwlock_wrlock(&lock_) == 0);
 }
 
-void CRYPTO_MUTEX_lock_write(CRYPTO_MUTEX *lock) {
-  if (pthread_rwlock_wrlock(lock) != 0) {
-    abort();
-  }
+void StaticMutex::UnlockWrite() {
+  BSSL_CHECK(pthread_rwlock_unlock(&lock_) == 0);
 }
 
-void CRYPTO_MUTEX_unlock_read(CRYPTO_MUTEX *lock) {
-  if (pthread_rwlock_unlock(lock) != 0) {
-    abort();
-  }
-}
-
-void CRYPTO_MUTEX_unlock_write(CRYPTO_MUTEX *lock) {
-  if (pthread_rwlock_unlock(lock) != 0) {
-    abort();
-  }
-}
-
-void CRYPTO_MUTEX_cleanup(CRYPTO_MUTEX *lock) { pthread_rwlock_destroy(lock); }
+Mutex::~Mutex() { pthread_rwlock_destroy(&lock_); }
 
 void CRYPTO_once(CRYPTO_once_t *once, void (*init)()) {
-  if (pthread_once(once, init) != 0) {
-    abort();
-  }
+  BSSL_CHECK(pthread_once(once, init) == 0);
 }
 
 static pthread_mutex_t g_destructors_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -147,5 +132,7 @@ int CRYPTO_set_thread_local(thread_local_data_t index, void *value,
   pointers[index] = value;
   return 1;
 }
+
+BSSL_NAMESPACE_END
 
 #endif  // OPENSSL_PTHREADS

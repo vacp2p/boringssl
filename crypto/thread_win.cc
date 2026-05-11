@@ -24,6 +24,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+
+BSSL_NAMESPACE_BEGIN
+
 static BOOL CALLBACK call_once_init(INIT_ONCE *once, void *arg, void **out) {
   void (**init)() = (void (**)())arg;
   (**init)();
@@ -31,30 +34,14 @@ static BOOL CALLBACK call_once_init(INIT_ONCE *once, void *arg, void **out) {
 }
 
 void CRYPTO_once(CRYPTO_once_t *once, void (*init)()) {
-  if (!InitOnceExecuteOnce(once, call_once_init, &init, nullptr)) {
-    abort();
-  }
+  BSSL_CHECK(InitOnceExecuteOnce(once, call_once_init, &init, nullptr));
 }
 
-void CRYPTO_MUTEX_init(CRYPTO_MUTEX *lock) { InitializeSRWLock(lock); }
-
-void CRYPTO_MUTEX_lock_read(CRYPTO_MUTEX *lock) { AcquireSRWLockShared(lock); }
-
-void CRYPTO_MUTEX_lock_write(CRYPTO_MUTEX *lock) {
-  AcquireSRWLockExclusive(lock);
-}
-
-void CRYPTO_MUTEX_unlock_read(CRYPTO_MUTEX *lock) {
-  ReleaseSRWLockShared(lock);
-}
-
-void CRYPTO_MUTEX_unlock_write(CRYPTO_MUTEX *lock) {
-  ReleaseSRWLockExclusive(lock);
-}
-
-void CRYPTO_MUTEX_cleanup(CRYPTO_MUTEX *lock) {
-  // SRWLOCKs require no cleanup.
-}
+void StaticMutex::LockRead() { AcquireSRWLockShared(&lock_); }
+void StaticMutex::UnlockRead() { ReleaseSRWLockShared(&lock_); }
+void StaticMutex::LockWrite() { AcquireSRWLockExclusive(&lock_); }
+void StaticMutex::UnlockWrite() { ReleaseSRWLockExclusive(&lock_); }
+Mutex::~Mutex() { /* SRWLOCKs require no cleanup. */ }
 
 static SRWLOCK g_destructors_lock = SRWLOCK_INIT;
 static thread_local_destructor_t g_destructors[NUM_OPENSSL_THREAD_LOCALS];
@@ -234,5 +221,7 @@ int CRYPTO_set_thread_local(thread_local_data_t index, void *value,
   pointers[index] = value;
   return 1;
 }
+
+BSSL_NAMESPACE_END
 
 #endif  // OPENSSL_WINDOWS_THREADS

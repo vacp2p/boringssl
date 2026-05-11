@@ -35,16 +35,16 @@
 
 using namespace bssl;
 
-static int parse_integer(CBS *cbs, BIGNUM **out) {
+static int parse_integer(CBS *cbs, UniquePtr<BIGNUM> *out) {
   assert(*out == nullptr);
-  *out = BN_new();
+  out->reset(BN_new());
   if (*out == nullptr) {
     return 0;
   }
-  return BN_parse_asn1_unsigned(cbs, *out);
+  return BN_parse_asn1_unsigned(cbs, out->get());
 }
 
-static int marshal_integer(CBB *cbb, BIGNUM *bn) {
+static int marshal_integer(CBB *cbb, const BIGNUM *bn) {
   if (bn == nullptr) {
     // An RSA object may be missing some components.
     OPENSSL_PUT_ERROR(RSA, RSA_R_VALUE_MISSING);
@@ -54,7 +54,7 @@ static int marshal_integer(CBB *cbb, BIGNUM *bn) {
 }
 
 RSA *RSA_parse_public_key(CBS *cbs) {
-  RSA *ret = RSA_new();
+  RSAImpl *ret = FromOpaque(RSA_new());
   if (ret == nullptr) {
     return nullptr;
   }
@@ -91,9 +91,10 @@ RSA *RSA_public_key_from_bytes(const uint8_t *in, size_t in_len) {
 
 int RSA_marshal_public_key(CBB *cbb, const RSA *rsa) {
   CBB child;
+  const RSAImpl *impl = FromOpaque(rsa);
   if (!CBB_add_asn1(cbb, &child, CBS_ASN1_SEQUENCE) ||
-      !marshal_integer(&child, rsa->n) ||
-      !marshal_integer(&child, rsa->e) ||
+      !marshal_integer(&child, impl->n.get()) ||
+      !marshal_integer(&child, impl->e.get()) ||  //
       !CBB_flush(cbb)) {
     OPENSSL_PUT_ERROR(RSA, RSA_R_ENCODE_ERROR);
     return 0;
@@ -120,7 +121,7 @@ int RSA_public_key_to_bytes(uint8_t **out_bytes, size_t *out_len,
 static const uint64_t kVersionTwoPrime = 0;
 
 RSA *RSA_parse_private_key(CBS *cbs) {
-  RSA *ret = RSA_new();
+  RSAImpl *ret = FromOpaque(RSA_new());
   if (ret == nullptr) {
     return nullptr;
   }
@@ -179,17 +180,18 @@ RSA *RSA_private_key_from_bytes(const uint8_t *in, size_t in_len) {
 }
 
 int RSA_marshal_private_key(CBB *cbb, const RSA *rsa) {
+  const RSAImpl *impl = FromOpaque(rsa);
   CBB child;
   if (!CBB_add_asn1(cbb, &child, CBS_ASN1_SEQUENCE) ||
       !CBB_add_asn1_uint64(&child, kVersionTwoPrime) ||
-      !marshal_integer(&child, rsa->n) ||
-      !marshal_integer(&child, rsa->e) ||
-      !marshal_integer(&child, rsa->d) ||
-      !marshal_integer(&child, rsa->p) ||
-      !marshal_integer(&child, rsa->q) ||
-      !marshal_integer(&child, rsa->dmp1) ||
-      !marshal_integer(&child, rsa->dmq1) ||
-      !marshal_integer(&child, rsa->iqmp) ||
+      !marshal_integer(&child, impl->n.get()) ||
+      !marshal_integer(&child, impl->e.get()) ||
+      !marshal_integer(&child, impl->d.get()) ||
+      !marshal_integer(&child, impl->p.get()) ||
+      !marshal_integer(&child, impl->q.get()) ||
+      !marshal_integer(&child, impl->dmp1.get()) ||
+      !marshal_integer(&child, impl->dmq1.get()) ||
+      !marshal_integer(&child, impl->iqmp.get()) ||  //
       !CBB_flush(cbb)) {
     OPENSSL_PUT_ERROR(RSA, RSA_R_ENCODE_ERROR);
     return 0;

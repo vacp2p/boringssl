@@ -201,6 +201,9 @@ static void ssl_crypto_x509_session_clear(SSL_SESSION *session) {
 static bool ssl_crypto_x509_session_verify_cert_chain(SSL_SESSION *session,
                                                       SSL_HANDSHAKE *hs,
                                                       uint8_t *out_alert) {
+  if (session->peer_cert_type != TLSEXT_cert_type_x509) {
+    return false;
+  }
   *out_alert = SSL_AD_INTERNAL_ERROR;
   STACK_OF(X509) *const cert_chain = session->x509_chain;
   if (cert_chain == nullptr || sk_X509_num(cert_chain) == 0) {
@@ -293,7 +296,7 @@ static bool ssl_crypto_x509_ssl_auto_chain_if_needed(SSL_HANDSHAKE *hs) {
   // Only build a chain if the feature isn't disabled, the legacy credential
   // exists but has no intermediates configured.
   SSL *ssl = hs->ssl;
-  SSL_CREDENTIAL *cred = hs->config->cert->legacy_credential.get();
+  SSLCredential *cred = hs->config->cert->legacy_credential.get();
   if ((ssl->mode & SSL_MODE_NO_AUTO_CHAIN) || !cred->IsComplete() ||
       sk_CRYPTO_BUFFER_num(cred->chain.get()) != 1) {
     return true;
@@ -596,7 +599,7 @@ int SSL_CTX_use_certificate(SSL_CTX *ctx, X509 *x) {
 static int ssl_cert_cache_leaf_cert(CERT *cert) {
   assert(cert->x509_method);
 
-  const SSL_CREDENTIAL *cred = cert->legacy_credential.get();
+  const SSLCredential *cred = cert->legacy_credential.get();
   if (cert->x509_leaf != nullptr || cred->chain == nullptr) {
     return 1;
   }
@@ -630,7 +633,7 @@ X509 *SSL_get_certificate(const SSL *ssl) {
 
 X509 *SSL_CTX_get0_certificate(const SSL_CTX *ctx) {
   check_ssl_ctx_x509_method(ctx);
-  MutexWriteLock lock(const_cast<CRYPTO_MUTEX *>(&ctx->lock));
+  MutexWriteLock lock(&ctx->lock);
   return ssl_cert_get0_leaf(ctx->cert.get());
 }
 
@@ -742,7 +745,7 @@ int SSL_clear_chain_certs(SSL *ssl) {
 static int ssl_cert_cache_chain_certs(CERT *cert) {
   assert(cert->x509_method);
 
-  const SSL_CREDENTIAL *cred = cert->legacy_credential.get();
+  const SSLCredential *cred = cert->legacy_credential.get();
   if (cert->x509_chain != nullptr || cred->chain == nullptr ||
       sk_CRYPTO_BUFFER_num(cred->chain.get()) < 2) {
     return 1;
@@ -768,7 +771,7 @@ static int ssl_cert_cache_chain_certs(CERT *cert) {
 
 int SSL_CTX_get0_chain_certs(const SSL_CTX *ctx, STACK_OF(X509) **out_chain) {
   check_ssl_ctx_x509_method(ctx);
-  MutexWriteLock lock(const_cast<CRYPTO_MUTEX *>(&ctx->lock));
+  MutexWriteLock lock(&ctx->lock);
   if (!ssl_cert_cache_chain_certs(ctx->cert.get())) {
     *out_chain = nullptr;
     return 0;
@@ -863,14 +866,14 @@ void SSL_set_client_CA_list(SSL *ssl, STACK_OF(X509_NAME) *name_list) {
     return;
   }
   ssl->ctx->x509_method->ssl_flush_cached_client_CA(ssl->config.get());
-  set_client_CA_list(&ssl->config->client_CA, name_list, ssl->ctx->pool);
+  set_client_CA_list(&ssl->config->client_CA, name_list, ssl->ctx->pool.get());
   sk_X509_NAME_pop_free(name_list, X509_NAME_free);
 }
 
 void SSL_CTX_set_client_CA_list(SSL_CTX *ctx, STACK_OF(X509_NAME) *name_list) {
   check_ssl_ctx_x509_method(ctx);
   ctx->x509_method->ssl_ctx_flush_cached_client_CA(ctx);
-  set_client_CA_list(&ctx->client_CA, name_list, ctx->pool);
+  set_client_CA_list(&ctx->client_CA, name_list, ctx->pool.get());
   sk_X509_NAME_pop_free(name_list, X509_NAME_free);
 }
 
@@ -936,7 +939,7 @@ STACK_OF(X509_NAME) *SSL_CTX_get_client_CA_list(const SSL_CTX *ctx) {
   check_ssl_ctx_x509_method(ctx);
   // This is a logically const operation that may be called on multiple threads,
   // so it needs to lock around updating |cached_x509_client_CA|.
-  MutexWriteLock lock(const_cast<CRYPTO_MUTEX *>(&ctx->lock));
+  MutexWriteLock lock(&ctx->lock);
   return buffer_names_to_x509(
       ctx->client_CA.get(),
       const_cast<STACK_OF(X509_NAME) **>(&ctx->cached_x509_client_CA));
@@ -985,7 +988,7 @@ int SSL_add_client_CA(SSL *ssl, X509 *x509) {
   if (!ssl->config) {
     return 0;
   }
-  if (!add_client_CA(&ssl->config->client_CA, x509, ssl->ctx->pool)) {
+  if (!add_client_CA(&ssl->config->client_CA, x509, ssl->ctx->pool.get())) {
     return 0;
   }
 
@@ -995,7 +998,7 @@ int SSL_add_client_CA(SSL *ssl, X509 *x509) {
 
 int SSL_CTX_add_client_CA(SSL_CTX *ctx, X509 *x509) {
   check_ssl_ctx_x509_method(ctx);
-  if (!add_client_CA(&ctx->client_CA, x509, ctx->pool)) {
+  if (!add_client_CA(&ctx->client_CA, x509, ctx->pool.get())) {
     return 0;
   }
 

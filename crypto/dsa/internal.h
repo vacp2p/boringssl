@@ -18,29 +18,38 @@
 #include <openssl/dsa.h>
 
 #include "../internal.h"
+#include "../mem_internal.h"
 
 
-struct dsa_st {
-  BIGNUM *p;
-  BIGNUM *q;
-  BIGNUM *g;
-
-  BIGNUM *pub_key;
-  BIGNUM *priv_key;
-
-  // Normally used to cache montgomery values
-  CRYPTO_MUTEX method_mont_lock;
-  BN_MONT_CTX *method_mont_p;
-  BN_MONT_CTX *method_mont_q;
-  CRYPTO_refcount_t references;
-  CRYPTO_EX_DATA ex_data;
-};
+DECLARE_OPAQUE_STRUCT(dsa_st, DSAImpl)
 
 BSSL_NAMESPACE_BEGIN
 
+class DSAImpl : public dsa_st, public RefCounted<DSAImpl> {
+ public:
+  DSAImpl();
+
+  UniquePtr<BIGNUM> p;
+  UniquePtr<BIGNUM> q;
+  UniquePtr<BIGNUM> g;
+
+  UniquePtr<BIGNUM> pub_key;
+  UniquePtr<BIGNUM> priv_key;
+
+  // Normally used to cache montgomery values
+  mutable Mutex method_mont_lock;
+  mutable UniquePtr<BN_MONT_CTX> method_mont_p;
+  mutable UniquePtr<BN_MONT_CTX> method_mont_q;
+  CRYPTO_EX_DATA ex_data;
+
+ private:
+  friend RefCounted;
+  ~DSAImpl();
+};
+
 // dsa_check_key performs cheap self-checks on |dsa|, and ensures it is within
 // DoS bounds. It returns one on success and zero on error.
-int dsa_check_key(const DSA *dsa);
+int dsa_check_key(const DSAImpl *dsa);
 
 BSSL_NAMESPACE_END
 

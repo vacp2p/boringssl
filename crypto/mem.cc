@@ -36,6 +36,8 @@
 #include "internal.h"
 
 
+using namespace bssl;
+
 #define OPENSSL_MALLOC_PREFIX 8
 static_assert(OPENSSL_MALLOC_PREFIX >= sizeof(size_t), "size_t too large");
 
@@ -103,20 +105,19 @@ WEAK_SYMBOL_FUNC(void, OPENSSL_memory_free, (void *ptr))
 WEAK_SYMBOL_FUNC(size_t, OPENSSL_memory_get_size, (void *ptr))
 
 #if defined(BORINGSSL_MALLOC_FAILURE_TESTING)
-static CRYPTO_MUTEX malloc_failure_lock = CRYPTO_MUTEX_INIT;
+static StaticMutex malloc_failure_lock;
 static uint64_t current_malloc_count = 0;
 static uint64_t malloc_number_to_fail = 0;
 static int malloc_failure_enabled = 0, break_on_malloc_fail = 0,
            any_malloc_failed = 0, disable_malloc_failures = 0;
 
 static void malloc_exit_handler() {
-  CRYPTO_MUTEX_lock_read(&malloc_failure_lock);
+  MutexReadLock lock(&malloc_failure_lock);
   if (any_malloc_failed) {
     // Signal to the test driver that some allocation failed, so it knows to
     // increment the counter and continue.
     _exit(88);
   }
-  CRYPTO_MUTEX_unlock_read(&malloc_failure_lock);
 }
 
 static void init_malloc_failure() {
@@ -143,11 +144,11 @@ static int should_fail_allocation() {
 
   // We lock just so multi-threaded tests are still correct, but we won't test
   // every malloc exhaustively.
-  CRYPTO_MUTEX_lock_write(&malloc_failure_lock);
+  malloc_failure_lock.LockWrite();
   int should_fail = current_malloc_count == malloc_number_to_fail;
   current_malloc_count++;
   any_malloc_failed = any_malloc_failed || should_fail;
-  CRYPTO_MUTEX_unlock_write(&malloc_failure_lock);
+  malloc_failure_lock.UnlockWrite();
 
   if (should_fail && break_on_malloc_fail) {
     raise(SIGTRAP);
@@ -158,24 +159,21 @@ static int should_fail_allocation() {
   return should_fail;
 }
 
-void OPENSSL_reset_malloc_counter_for_testing() {
-  CRYPTO_MUTEX_lock_write(&malloc_failure_lock);
+void bssl::OPENSSL_reset_malloc_counter_for_testing() {
+  MutexWriteLock lock(&malloc_failure_lock);
   current_malloc_count = 0;
-  CRYPTO_MUTEX_unlock_write(&malloc_failure_lock);
 }
 
-void OPENSSL_disable_malloc_failures_for_testing() {
-  CRYPTO_MUTEX_lock_write(&malloc_failure_lock);
+void bssl::OPENSSL_disable_malloc_failures_for_testing() {
+  MutexWriteLock lock(&malloc_failure_lock);
   BSSL_CHECK(!disable_malloc_failures);
   disable_malloc_failures = 1;
-  CRYPTO_MUTEX_unlock_write(&malloc_failure_lock);
 }
 
-void OPENSSL_enable_malloc_failures_for_testing() {
-  CRYPTO_MUTEX_lock_write(&malloc_failure_lock);
+void bssl::OPENSSL_enable_malloc_failures_for_testing() {
+  MutexWriteLock lock(&malloc_failure_lock);
   BSSL_CHECK(disable_malloc_failures);
   disable_malloc_failures = 0;
-  CRYPTO_MUTEX_unlock_write(&malloc_failure_lock);
 }
 
 #else
@@ -300,14 +298,11 @@ void OPENSSL_cleanse(void *ptr, size_t len) {
   SecureZeroMemory(ptr, len);
 #else
   OPENSSL_memset(ptr, 0, len);
-
-#if !defined(OPENSSL_NO_ASM)
-  /* As best as we can tell, this is sufficient to break any optimisations that
-     might try to eliminate "superfluous" memsets. If there's an easy way to
-     detect memset_s, it would be better to use that. */
+  // As best as we can tell, this is sufficient to break any optimisations that
+  // might try to eliminate "superfluous" memsets. If there's an easy way to
+  // detect memset_s, it would be better to use that.
   __asm__ __volatile__("" : : "r"(ptr) : "memory");
 #endif
-#endif  // !OPENSSL_NO_ASM
 }
 
 void OPENSSL_clear_free(void *ptr, size_t unused) { OPENSSL_free(ptr); }
@@ -456,8 +451,8 @@ int BIO_vsnprintf(char *buf, size_t n, const char *format, va_list args) {
   return vsnprintf(buf, n, format, args);
 }
 
-int OPENSSL_vasprintf_internal(char **str, const char *format, va_list args,
-                               int system_malloc) {
+int bssl::OPENSSL_vasprintf_internal(char **str, const char *format,
+                                     va_list args, int system_malloc) {
   void *(*allocate)(size_t) = system_malloc ? malloc : OPENSSL_malloc;
   void (*deallocate)(void *) = system_malloc ? free : OPENSSL_free;
   void *(*reallocate)(void *, size_t) =

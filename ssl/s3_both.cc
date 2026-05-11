@@ -32,6 +32,7 @@
 #include <openssl/rand.h>
 #include <openssl/sha2.h>
 
+#include "../crypto/bytestring/internal.h"
 #include "../crypto/internal.h"
 #include "internal.h"
 
@@ -619,6 +620,8 @@ bool ssl_tls13_cipher_meets_policy(uint16_t cipher_id,
       }
 
     case ssl_compliance_policy_wpa3_192_202304:
+    case ssl_compliance_policy_cnsa1_202603:
+    case ssl_compliance_policy_cnsa2_202603:
       switch (cipher_id) {
         case SSL_CIPHER_AES_256_GCM_SHA384:
           return true;

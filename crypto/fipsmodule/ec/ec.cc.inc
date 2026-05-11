@@ -26,6 +26,7 @@
 #include <openssl/nid.h>
 
 #include "../../internal.h"
+#include "../../mem_internal.h"
 #include "../bn/internal.h"
 #include "../delocate.h"
 #include "internal.h"
@@ -73,19 +74,11 @@ DEFINE_METHOD_FUNCTION(EC_GROUP, EC_group_p224) {
   ec_group_init_static_mont(&out->order, std::size(kP224Order), kP224Order,
                             kP224OrderRR, kP224OrderN0);
 
-#if defined(BORINGSSL_HAS_UINT128) && !defined(OPENSSL_SMALL)
-  out->meth = EC_GFp_nistp224_method();
-  OPENSSL_memcpy(out->generator.raw.X.words, kP224GX, sizeof(kP224GX));
-  OPENSSL_memcpy(out->generator.raw.Y.words, kP224GY, sizeof(kP224GY));
-  out->generator.raw.Z.words[0] = 1;
-  OPENSSL_memcpy(out->b.words, kP224B, sizeof(kP224B));
-#else
   out->meth = EC_GFp_mont_method();
   OPENSSL_memcpy(out->generator.raw.X.words, kP224MontGX, sizeof(kP224MontGX));
   OPENSSL_memcpy(out->generator.raw.Y.words, kP224MontGY, sizeof(kP224MontGY));
   OPENSSL_memcpy(out->generator.raw.Z.words, kP224FieldR, sizeof(kP224FieldR));
   OPENSSL_memcpy(out->b.words, kP224MontB, sizeof(kP224MontB));
-#endif
   out->generator.group = out;
 
   ec_group_set_a_minus3(out);
@@ -201,16 +194,10 @@ EC_GROUP *EC_GROUP_new_curve_GFp(const BIGNUM *p, const BIGNUM *a,
     return nullptr;
   }
 
-  UniquePtr<EC_GROUP> ret(
-      reinterpret_cast<EC_GROUP *>(OPENSSL_zalloc(sizeof(EC_GROUP))));
+  UniquePtr<ECCustomGroup> ret(New<ECCustomGroup>(EC_GFp_mont_method()));
   if (ret == nullptr) {
     return nullptr;
   }
-  ret->references = 1;
-  ret->meth = EC_GFp_mont_method();
-  bn_mont_ctx_init(&ret->field);
-  bn_mont_ctx_init(&ret->order);
-  ret->generator.group = ret.get();
   if (!ec_GFp_simple_group_set_curve(ret.get(), p, a_reduced, b_reduced, ctx)) {
     return nullptr;
   }
@@ -285,17 +272,27 @@ EC_GROUP *EC_GROUP_new_by_curve_name(int nid) {
   }
 }
 
+ECCustomGroup::ECCustomGroup(const EC_METHOD *m)
+    : ec_group_st({}), RefCounted(CheckSubClass()) {
+  meth = m;
+  bn_mont_ctx_init(&field);
+  bn_mont_ctx_init(&order);
+  generator.group = this;
+}
+
+ECCustomGroup::~ECCustomGroup() {
+  bn_mont_ctx_cleanup(&order);
+  bn_mont_ctx_cleanup(&field);
+}
+
 void EC_GROUP_free(EC_GROUP *group) {
   if (group == nullptr ||
       // Built-in curves are static.
-      group->curve_name != NID_undef ||
-      !CRYPTO_refcount_dec_and_test_zero(&group->references)) {
+      group->curve_name != NID_undef) {
     return;
   }
-
-  bn_mont_ctx_cleanup(&group->order);
-  bn_mont_ctx_cleanup(&group->field);
-  OPENSSL_free(group);
+  auto *custom = static_cast<ECCustomGroup *>(group);
+  custom->DecRefInternal();
 }
 
 EC_GROUP *EC_GROUP_dup(const EC_GROUP *a) {
@@ -304,11 +301,12 @@ EC_GROUP *EC_GROUP_dup(const EC_GROUP *a) {
       a->curve_name != NID_undef) {
     return (EC_GROUP *)a;
   }
+  auto *custom = static_cast<const ECCustomGroup *>(a);
 
   // Groups are logically immutable (but for |EC_GROUP_set_generator| which must
   // be called early on), so we simply take a reference.
-  EC_GROUP *group = (EC_GROUP *)a;
-  CRYPTO_refcount_inc(&group->references);
+  ECCustomGroup *group = const_cast<ECCustomGroup *>(custom);
+  group->UpRefInternal();
   return group;
 }
 
@@ -411,7 +409,7 @@ EC_POINT *EC_POINT_new(const EC_GROUP *group) {
     return nullptr;
   }
 
-  EC_POINT *ret = reinterpret_cast<EC_POINT *>(OPENSSL_malloc(sizeof *ret));
+  EC_POINT *ret = New<EC_POINT>();
   if (ret == nullptr) {
     return nullptr;
   }
@@ -428,7 +426,7 @@ static void ec_point_free(EC_POINT *point, int free_group) {
   if (free_group) {
     EC_GROUP_free(point->group);
   }
-  OPENSSL_free(point);
+  Delete(point);
 }
 
 void EC_POINT_free(EC_POINT *point) {
@@ -553,17 +551,12 @@ int bssl::ec_jacobian_to_affine_batch(const EC_GROUP *group, EC_AFFINE *out,
 int bssl::ec_point_set_affine_coordinates(const EC_GROUP *group, EC_AFFINE *out,
                                           const EC_FELEM *x,
                                           const EC_FELEM *y) {
-  void (*const felem_mul)(const EC_GROUP *, EC_FELEM *r, const EC_FELEM *a,
-                          const EC_FELEM *b) = group->meth->felem_mul;
-  void (*const felem_sqr)(const EC_GROUP *, EC_FELEM *r, const EC_FELEM *a) =
-      group->meth->felem_sqr;
-
   // Check if the point is on the curve.
   EC_FELEM lhs, rhs;
-  felem_sqr(group, &lhs, y);                   // lhs = y^2
-  felem_sqr(group, &rhs, x);                   // rhs = x^2
+  ec_felem_sqr(group, &lhs, y);                // lhs = y^2
+  ec_felem_sqr(group, &rhs, x);                // rhs = x^2
   ec_felem_add(group, &rhs, &rhs, &group->a);  // rhs = x^2 + a
-  felem_mul(group, &rhs, &rhs, x);             // rhs = x^3 + ax
+  ec_felem_mul(group, &rhs, &rhs, x);          // rhs = x^3 + ax
   ec_felem_add(group, &rhs, &rhs, &group->b);  // rhs = x^3 + ax + b
   if (!ec_felem_equal(group, &lhs, &rhs)) {
     OPENSSL_PUT_ERROR(EC, EC_R_POINT_IS_NOT_ON_CURVE);

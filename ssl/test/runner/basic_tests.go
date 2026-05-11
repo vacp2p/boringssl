@@ -1116,6 +1116,34 @@ read alert 1 0
 			expectedError:     ":TOO_MANY_WARNING_ALERTS:",
 		},
 		{
+			name: "AlternateEmptyRecordsAndWarningAlerts",
+			config: Config{
+				MaxVersion: VersionTLS12,
+			},
+			sendEmptyRecords:  32,
+			sendWarningAlerts: 4,
+		},
+		{
+			name: "AlternateTooManyEmptyRecordsAndWarningAlerts",
+			config: Config{
+				MaxVersion: VersionTLS12,
+			},
+			sendEmptyRecords:  33,
+			sendWarningAlerts: 4,
+			shouldFail:        true,
+			expectedError:     ":TOO_MANY_EMPTY_FRAGMENTS:",
+		},
+		{
+			name: "AlternateEmptyRecordsAndTooManyWarningAlerts",
+			config: Config{
+				MaxVersion: VersionTLS12,
+			},
+			sendEmptyRecords:  32,
+			sendWarningAlerts: 5,
+			shouldFail:        true,
+			expectedError:     ":TOO_MANY_WARNING_ALERTS:",
+		},
+		{
 			name:               "SendBogusAlertType",
 			sendBogusAlertType: true,
 			shouldFail:         true,
@@ -1788,7 +1816,7 @@ read alert 1 0
 
 	// Test that very large messages can be received.
 	cert := rsaCertificate
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		cert.Certificate = append(cert.Certificate, cert.Certificate[0])
 	}
 	testCases = append(testCases, testCase{

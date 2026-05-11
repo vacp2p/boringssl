@@ -16,7 +16,7 @@
 #ifndef OPENSSL_HEADER_X509_H
 #define OPENSSL_HEADER_X509_H
 
-#include <openssl/base.h>   // IWYU pragma: export
+#include <openssl/base.h>  // IWYU pragma: export
 
 #include <time.h>
 
@@ -76,6 +76,14 @@ DECLARE_ASN1_ITEM(X509)
 
 // X509_up_ref adds one to the reference count of |x509| and returns one.
 OPENSSL_EXPORT int X509_up_ref(X509 *x509);
+
+// X509_dup_ref increments the reference count of |x509| and returns |x509|.
+// The caller must call |X509_free| on the result to release the reference.
+//
+// WARNING: Although the result is non-const for use with |X509_free|, it is
+// still shared with other parts of the appplication for the same object. Avoid
+// mutating shared |X509|s.
+OPENSSL_EXPORT X509 *X509_dup_ref(const X509 *x509);
 
 // X509_chain_up_ref returns a newly-allocated |STACK_OF(X509)| containing a
 // shallow copy of |chain|, or NULL on error. That is, the return value has the
@@ -393,12 +401,12 @@ OPENSSL_EXPORT int i2d_X509_tbs(const X509 *x509, uint8_t **outp);
 // one if the signature is valid and zero otherwise. Note this function only
 // checks the signature itself and does not perform a full certificate
 // validation.
-OPENSSL_EXPORT int X509_verify(X509 *x509, EVP_PKEY *pkey);
+OPENSSL_EXPORT int X509_verify(const X509 *x509, EVP_PKEY *pkey);
 
 // X509_get1_email returns a newly-allocated list of NUL-terminated strings
 // containing all email addresses in |x509|'s subject and all rfc822name names
 // in |x509|'s subject alternative names. Email addresses which contain embedded
-// NUL bytes are skipped.
+// NUL bytes are skipped. The results are returned in an arbitrary order.
 //
 // On error, or if there are no such email addresses, it returns NULL. When
 // done, the caller must release the result with |X509_email_free|.
@@ -408,7 +416,7 @@ OPENSSL_EXPORT STACK_OF(OPENSSL_STRING) *X509_get1_email(const X509 *x509);
 // containing all OCSP URIs in |x509|. That is, it collects all URI
 // AccessDescriptions with an accessMethod of id-ad-ocsp in |x509|'s authority
 // information access extension. URIs which contain embedded NUL bytes are
-// skipped.
+// skipped. The results are returned in an arbitrary order.
 //
 // On error, or if there are no such URIs, it returns NULL. When done, the
 // caller must release the result with |X509_email_free|.
@@ -730,7 +738,7 @@ OPENSSL_EXPORT X509_NAME *X509_CRL_get_issuer(const X509_CRL *crl);
 // On success, |*out| continues to be owned by |crl|. It is an error to free or
 // otherwise modify |*out|.
 //
-// TODO(crbug.com/boringssl/600): Ideally |crl| would be const. It is broadly
+// TODO(crbug.com/42290473): Ideally |crl| would be const. It is broadly
 // thread-safe, but changes the order of entries in |crl|. It cannot be called
 // concurrently with |i2d_X509_CRL|.
 OPENSSL_EXPORT int X509_CRL_get0_by_serial(X509_CRL *crl, X509_REVOKED **out,
@@ -738,8 +746,12 @@ OPENSSL_EXPORT int X509_CRL_get0_by_serial(X509_CRL *crl, X509_REVOKED **out,
 
 // X509_CRL_get0_by_cert behaves like |X509_CRL_get0_by_serial|, except it looks
 // for the entry that matches |x509|.
+//
+// TODO(crbug.com/42290473): Ideally |crl| would be const. It is broadly
+// thread-safe, but changes the order of entries in |crl|. It cannot be called
+// concurrently with |i2d_X509_CRL|.
 OPENSSL_EXPORT int X509_CRL_get0_by_cert(X509_CRL *crl, X509_REVOKED **out,
-                                         X509 *x509);
+                                         const X509 *x509);
 
 // X509_CRL_get_REVOKED returns the list of revoked certificates in |crl|, or
 // NULL if |crl| omits it.
@@ -810,11 +822,11 @@ OPENSSL_EXPORT int X509_CRL_get_signature_nid(const X509_CRL *crl);
 // reflect modifications made to |crl|. It may be used to manually verify the
 // signature of an existing CRL. To generate CRLs, use |i2d_re_X509_CRL_tbs|
 // instead.
-OPENSSL_EXPORT int i2d_X509_CRL_tbs(X509_CRL *crl, unsigned char **outp);
+OPENSSL_EXPORT int i2d_X509_CRL_tbs(const X509_CRL *crl, unsigned char **outp);
 
 // X509_CRL_verify checks that |crl| has a valid signature by |pkey|. It returns
 // one if the signature is valid and zero otherwise.
-OPENSSL_EXPORT int X509_CRL_verify(X509_CRL *crl, EVP_PKEY *pkey);
+OPENSSL_EXPORT int X509_CRL_verify(const X509_CRL *crl, EVP_PKEY *pkey);
 
 
 // Issuing certificate revocation lists.
@@ -984,7 +996,7 @@ OPENSSL_EXPORT int X509_REVOKED_set_revocationDate(X509_REVOKED *revoked,
 OPENSSL_EXPORT const STACK_OF(X509_EXTENSION) *X509_REVOKED_get0_extensions(
     const X509_REVOKED *r);
 
-    // X509_REVOKED_get_ext_count returns the number of extensions in |x|.
+// X509_REVOKED_get_ext_count returns the number of extensions in |x|.
 OPENSSL_EXPORT int X509_REVOKED_get_ext_count(const X509_REVOKED *x);
 
 // X509_REVOKED_get_ext_by_NID behaves like |X509v3_get_ext_by_NID| but searches
@@ -1163,13 +1175,14 @@ OPENSSL_EXPORT int X509_REQ_get_signature_nid(const X509_REQ *req);
 
 // X509_REQ_verify checks that |req| has a valid signature by |pkey|. It returns
 // one if the signature is valid and zero otherwise.
-OPENSSL_EXPORT int X509_REQ_verify(X509_REQ *req, EVP_PKEY *pkey);
+OPENSSL_EXPORT int X509_REQ_verify(const X509_REQ *req, EVP_PKEY *pkey);
 
 // X509_REQ_get1_email returns a newly-allocated list of NUL-terminated strings
 // containing all email addresses in |req|'s subject and all rfc822name names
 // in |req|'s subject alternative names. The subject alternative names extension
 // is extracted from the result of |X509_REQ_get_extensions|. Email addresses
-// which contain embedded NUL bytes are skipped.
+// which contain embedded NUL bytes are skipped. The results are returned in an
+// arbitrary order.
 //
 // On error, or if there are no such email addresses, it returns NULL. When
 // done, the caller must release the result with |X509_email_free|.
@@ -4129,7 +4142,8 @@ OPENSSL_EXPORT int X509_NAME_print(BIO *bp, const X509_NAME *name, int obase);
 // This function outputs a legacy format that does not correctly handle string
 // encodings and other cases. Prefer |X509_NAME_print_ex| if printing a name for
 // debugging purposes.
-OPENSSL_EXPORT char *X509_NAME_oneline(const X509_NAME *name, char *buf, int size);
+OPENSSL_EXPORT char *X509_NAME_oneline(const X509_NAME *name, char *buf,
+                                       int size);
 
 // X509_NAME_print_ex_fp behaves like |X509_NAME_print_ex| but writes to |fp|.
 OPENSSL_EXPORT int X509_NAME_print_ex_fp(FILE *fp, const X509_NAME *nm,
@@ -5289,6 +5303,7 @@ BORINGSSL_MAKE_DELETER(GENERAL_NAME, GENERAL_NAME_free)
 BORINGSSL_MAKE_DELETER(GENERAL_SUBTREE, GENERAL_SUBTREE_free)
 BORINGSSL_MAKE_DELETER(NAME_CONSTRAINTS, NAME_CONSTRAINTS_free)
 BORINGSSL_MAKE_DELETER(NETSCAPE_SPKI, NETSCAPE_SPKI_free)
+BORINGSSL_MAKE_DELETER(POLICY_CONSTRAINTS, POLICY_CONSTRAINTS_free)
 BORINGSSL_MAKE_DELETER(POLICY_MAPPING, POLICY_MAPPING_free)
 BORINGSSL_MAKE_DELETER(POLICYINFO, POLICYINFO_free)
 BORINGSSL_MAKE_DELETER(RSA_PSS_PARAMS, RSA_PSS_PARAMS_free)

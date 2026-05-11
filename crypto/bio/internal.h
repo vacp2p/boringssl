@@ -20,6 +20,7 @@
 #include <openssl/ex_data.h>
 
 #include "../internal.h"
+#include "../mem_internal.h"
 
 #if !defined(OPENSSL_NO_SOCK)
 #if !defined(OPENSSL_WINDOWS)
@@ -36,6 +37,8 @@ typedef int socklen_t;
 #endif  // !OPENSSL_NO_SOCK
 
 
+DECLARE_OPAQUE_STRUCT(bio_st, Bio)
+
 struct bio_method_st {
   int type;
   const char *name;
@@ -48,7 +51,12 @@ struct bio_method_st {
   long (*callback_ctrl)(BIO *, int, BIO_info_cb *);
 };
 
-struct bio_st {
+BSSL_NAMESPACE_BEGIN
+
+class Bio : public bio_st, public RefCounted<Bio> {
+ public:
+  explicit Bio(const BIO_METHOD *m);
+
   const BIO_METHOD *method;
   CRYPTO_EX_DATA ex_data;
 
@@ -56,26 +64,27 @@ struct bio_st {
   // integrated into |flags|, to save memory.
 
   // init is non-zero if this |BIO| has been initialised.
-  int init;
+  int init = 0;
   // shutdown is often used by specific |BIO_METHOD|s to determine whether
   // they own some underlying resource. This flag can often be controlled by
   // |BIO_set_close|. For example, whether an fd BIO closes the underlying fd
   // when it, itself, is closed.
-  int shutdown;
-  int flags;
-  int retry_reason;
+  int shutdown = 1;
+  int flags = 0;
+  int retry_reason = 0;
   // num is a BIO-specific value. For example, in fd BIOs it's used to store a
   // file descriptor.
-  int num;
-  CRYPTO_refcount_t references;
-  void *ptr;
+  int num = 0;
+  void *ptr = nullptr;
   // next_bio points to the next |BIO| in a chain. This |BIO| owns a reference
   // to |next_bio|.
-  BIO *next_bio;  // used by filter BIOs
-  uint64_t num_read, num_write;
-};
+  Bio *next_bio = nullptr;  // used by filter BIOs
+  uint64_t num_read = 0, num_write = 0;
 
-BSSL_NAMESPACE_BEGIN
+ private:
+  friend RefCounted;
+  ~Bio();
+};
 
 #if !defined(OPENSSL_NO_SOCK)
 

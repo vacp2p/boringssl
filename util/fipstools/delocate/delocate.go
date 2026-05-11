@@ -147,6 +147,8 @@ func (d *delocation) processInput(input inputFile) (err error) {
 			statement, err = d.processDirective(statement, node.up)
 		case ruleLabelContainingDirective:
 			statement, err = d.processLabelContainingDirective(statement, node.up)
+		case rulePrefAlignDirective:
+			statement, err = d.processPrefAlignDirective(statement, node.up)
 		case ruleSymbolDefiningDirective:
 			statement, err = d.processSymbolDefiningDirective(statement, node.up)
 		case ruleLabel:
@@ -195,6 +197,14 @@ func (d *delocation) processDirective(statement, directive *node32) (*node32, er
 	}, ruleArgs, ruleArg)
 
 	switch directiveName {
+	case "addrsig", "addrsig_sym":
+		// Remove .addrsig and .addrsig_sym tables.
+		// Instead, consider all symbols inside the BCM address-significant
+		// so the linker will not merge them with other symbols,
+		// potentially breaking the integrity check of the BCM.
+		d.writeCommentedNode(statement)
+		break
+
 	case "comm", "lcomm":
 		if len(args) < 1 {
 			return nil, errors.New("comm directive has no arguments")
@@ -262,7 +272,29 @@ func (d *delocation) processDirective(statement, directive *node32) (*node32, er
 		case ".bss":
 			d.writeNode(statement)
 			return d.handleBSS(statement)
+
+		case ".llvm_addrsig":
+			// Remove .llvm_addrsig sections.
+			// Instead, consider all symbols inside the BCM address-significant
+			// so the linker will not merge them with other symbols,
+			// potentially breaking the integrity check of the BCM.
+			d.writeCommentedNode(statement)
+			d.output.WriteString(".section .discard_llvm_addrsig, \"e\", @progbits\n")
 		}
+
+	case "reloc":
+		// The .reloc directive is used to emit custom relocations into the object
+		// file. R_AARCH64_PATCHINST is a special relocation type used to implement
+		// deactivation symbols, which are associated with LLVM's pointer field
+		// protection feature. Because deactivation symbols are only defined in
+		// special cases which don't apply to BoringSSL, we pass them through and
+		// let the integrity check fail in the unexpected case that a symbol was
+		// defined.
+		if args[1] != "R_AARCH64_PATCHINST" {
+			return nil, errors.New("unexpected .reloc directive")
+		}
+		args[0] = d.mapLocalSymbol(args[0])
+		d.output.WriteString(".reloc " + strings.Join(args, ", ") + "\n")
 
 	default:
 		d.writeNode(statement)
@@ -347,15 +379,59 @@ func (d *delocation) processLabelContainingDirective(statement, directive *node3
 	return statement, nil
 }
 
+func (d *delocation) processPrefAlignDirective(statement, directive *node32) (*node32, error) {
+	assertNodeType(directive, ruleWS)
+	arg1 := directive.next
+	assertNodeType(arg1, ruleArg)
+
+	arg2 := skipWS(arg1.next)
+	if arg2 == nil {
+		d.writeNode(statement)
+		return statement, nil
+	}
+	assertNodeType(arg2, ruleSymbolArg)
+
+	arg3 := skipWS(arg2.next)
+	assertNodeType(arg3, ruleArg)
+
+	if arg3.next != nil {
+		panic("unexpected nodes")
+	}
+
+	assertNodeType(arg2.up, ruleSymbolExpr)
+	var b strings.Builder
+	if d.processSymbolExpr(arg2.up, &b) {
+		fmt.Fprintf(d.output, "\t.prefalign\t%s, %s, %s\n", d.contents(arg1), b.String(), d.contents(arg3))
+	} else {
+		d.writeNode(statement)
+	}
+
+	return statement, nil
+}
+
 func (d *delocation) processSymbolDefiningDirective(statement, directive *node32) (*node32, error) {
 	changed := false
-	assertNodeType(directive, ruleSymbolDefiningDirectiveName)
-	name := d.contents(directive)
 
-	node := directive.next
-	assertNodeType(node, ruleWS)
+	var format string
 
-	node = node.next
+	node := directive
+	switch node.pegRule {
+	case ruleSymbolDefiningDirectiveName:
+		// .set a, b
+		name := d.contents(node)
+		format = fmt.Sprintf("\t%s\t%%s, %%s\n", name)
+		node = node.next
+		assertNodeType(node, ruleWS)
+		node = node.next
+
+	case ruleLocalSymbol, ruleSymbolName:
+		// a = b
+		format = "\t%s = %s\n"
+
+	default:
+		return nil, fmt.Errorf("unknown symbol defining directive type %q", rul3s[directive.pegRule])
+	}
+
 	symbol := d.contents(node)
 	isLocal := node.pegRule == ruleLocalSymbol
 	if isLocal {
@@ -376,11 +452,11 @@ func (d *delocation) processSymbolDefiningDirective(statement, directive *node32
 		d.writeNode(statement)
 	} else {
 		d.writeCommentedNode(statement)
-		fmt.Fprintf(d.output, "\t%s\t%s, %s\n", name, symbol, arg)
+		fmt.Fprintf(d.output, format, symbol, arg)
 	}
 
 	if !isLocal {
-		fmt.Fprintf(d.output, "\t%s\t%s, %s\n", name, localTargetName(symbol), arg)
+		fmt.Fprintf(d.output, format, localTargetName(symbol), arg)
 	}
 
 	return statement, nil
@@ -1491,11 +1567,6 @@ func transform(w stringWriter, inputs []inputFile) error {
 	}
 	w.WriteString(fmt.Sprintf(".file %d \"inserted_by_delocate.c\"%s\n", maxObservedFileNumber+1, fileTrailing))
 	w.WriteString(fmt.Sprintf(".loc %d 1 0\n", maxObservedFileNumber+1))
-	// Mark BORINGSSL_bcm_text_start as global, so that our tools can more reliably find it,
-	// but hidden so it does not pollute downstream consumers' dynamic symbol tables. This
-	// is primarily a hook for objcopy to upgrade to visible, if needed to sample the hash.
-	w.WriteString(".globl BORINGSSL_bcm_text_start\n")
-	w.WriteString(".hidden BORINGSSL_bcm_text_start\n")
 	w.WriteString("BORINGSSL_bcm_text_start:\n")
 	w.WriteString(localTargetName("BORINGSSL_bcm_text_start") + ":\n")
 
@@ -1507,8 +1578,6 @@ func transform(w stringWriter, inputs []inputFile) error {
 
 	w.WriteString(".text\n")
 	w.WriteString(fmt.Sprintf(".loc %d 2 0\n", maxObservedFileNumber+1))
-	w.WriteString(".globl BORINGSSL_bcm_text_end\n")
-	w.WriteString(".hidden BORINGSSL_bcm_text_end\n")
 	w.WriteString("BORINGSSL_bcm_text_end:\n")
 	w.WriteString(localTargetName("BORINGSSL_bcm_text_end") + ":\n")
 

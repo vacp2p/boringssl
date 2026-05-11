@@ -18,7 +18,13 @@
 #include <openssl/ssl.h>
 #include <string.h>
 
+#include <optional>
 #include <string>
+#include <string_view>
+#include <vector>
+
+
+BSSL_NAMESPACE_BEGIN
 
 // InitSocketLibrary calls the Windows socket init functions, if needed.
 bool InitSocketLibrary();
@@ -49,6 +55,15 @@ class Listener {
 
 bool VersionFromString(uint16_t *out_version, const std::string &version);
 
+// CertificateTypesFromString parses a comma-separated list of certificate types
+// ("rpk" for Raw Public Keys, "x509" for X.509 certificates) and returns a
+// vector containing the corresponding certificate type values, or nullopt on
+// parsing error.
+std::optional<std::vector<uint8_t>> CertificateTypesFromString(
+    std::string_view s);
+
+std::optional<std::vector<uint8_t>> DecodeHex(std::string_view hex);
+
 void PrintConnectionInfo(BIO *bio, const SSL *ssl);
 
 bool SocketSetNonBlocking(int sock, bool is_non_blocking);
@@ -67,5 +82,7 @@ bool DoSMTPStartTLS(int sock);
 // DoHTTPTunnel sends an HTTP CONNECT request over |sock|. It returns true on
 // success and false otherwise.
 bool DoHTTPTunnel(int sock, const std::string &hostname_and_port);
+
+BSSL_NAMESPACE_END
 
 #endif  // !OPENSSL_HEADER_TOOL_TRANSPORT_COMMON_H

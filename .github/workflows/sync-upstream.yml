@@ -1,0 +1,136 @@
+name: Sync BoringSSL upstream
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      allow_mirror_mismatch:
+        description: "Allow a non-ancestor GitHub mirror mismatch with canonical Gitiles upstream"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: sync-boringssl-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_BRANCH: main
+      SYNC_BRANCH: automation/boringssl-upstream-sync
+      ALLOW_MIRROR_MISMATCH: ${{ inputs.allow_mirror_mismatch || 'false' }}
+      BORINGSSL_UPDATE_BOT_TOKEN: ${{ secrets.BORINGSSL_UPDATE_BOT_TOKEN }}
+      GH_TOKEN: ${{ secrets.BORINGSSL_UPDATE_BOT_TOKEN }}
+
+    steps:
+      - name: Check bot token
+        run: |
+          if [[ -z "${BORINGSSL_UPDATE_BOT_TOKEN}" ]]; then
+            echo "BORINGSSL_UPDATE_BOT_TOKEN is required" >&2
+            exit 1
+          fi
+
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Configure git
+        run: |
+          git config user.name "vacp2p-boringssl-updater"
+          git config user.email "vacp2p-boringssl-updater@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${BORINGSSL_UPDATE_BOT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Sync upstream
+        id: sync
+        run: python3 .vac/scripts/sync_upstream.py
+
+      - name: Push sync branch
+        if: steps.sync.outputs.has_changes == 'true'
+        run: git push --force-with-lease origin HEAD:${SYNC_BRANCH}
+
+      - name: Open or update PR
+        if: steps.sync.outputs.has_changes == 'true'
+        run: |
+          pr_number="$(gh pr list \
+            --base "${TARGET_BRANCH}" \
+            --head "${SYNC_BRANCH}" \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [[ -n "${pr_number}" ]]; then
+            gh pr edit "${pr_number}" \
+              --title "chore: sync BoringSSL upstream" \
+              --body-file "${{ steps.sync.outputs.pr_body_path }}"
+          else
+            gh pr create \
+              --base "${TARGET_BRANCH}" \
+              --head "${SYNC_BRANCH}" \
+              --title "chore: sync BoringSSL upstream" \
+              --body-file "${{ steps.sync.outputs.pr_body_path }}"
+          fi
+
+      - name: Close previous failure issue
+        if: success()
+        run: |
+          title="BoringSSL upstream sync failed"
+          issue_number="$(gh issue list \
+            --state open \
+            --search "${title} in:title" \
+            --json number,title \
+            --jq ".[] | select(.title == \"${title}\") | .number" \
+            | head -n1)"
+
+          if [[ -n "${issue_number}" ]]; then
+            gh issue comment "${issue_number}" \
+              --body "The BoringSSL upstream sync completed successfully in ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}."
+            gh issue close "${issue_number}" \
+              --comment "Closing because the latest BoringSSL upstream sync succeeded."
+          fi
+
+      - name: Open failure issue
+        if: failure() && env.BORINGSSL_UPDATE_BOT_TOKEN != ''
+        run: |
+          title="BoringSSL upstream sync failed"
+          body_file="${RUNNER_TEMP}/boringssl-sync-failure.md"
+
+          cat > "${body_file}" <<EOF
+          The weekly BoringSSL upstream sync failed.
+
+          Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          Repository: ${GITHUB_REPOSITORY}
+          Branch: ${GITHUB_REF_NAME}
+          Run attempt: ${GITHUB_RUN_ATTEMPT}
+
+          Check for:
+          - merge conflicts with upstream BoringSSL
+          - fiat_p256 patch replay failure
+          - ADX dispatch invariant failure
+          - provenance fast-forward failure
+          - non-ancestor GitHub mirror mismatch
+
+          This issue is maintained by the sync workflow and should be closed automatically after a later successful sync.
+          EOF
+
+          issue_number="$(gh issue list \
+            --state open \
+            --search "${title} in:title" \
+            --json number,title \
+            --jq ".[] | select(.title == \"${title}\") | .number" \
+            | head -n1)"
+
+          if [[ -n "${issue_number}" ]]; then
+            gh issue comment "${issue_number}" --body-file "${body_file}"
+          else
+            gh issue create \
+              --title "${title}" \
+              --body-file "${body_file}"
+          fi

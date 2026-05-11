@@ -1,0 +1,51 @@
+name: Notify nim-boringssl
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    env:
+      BORINGSSL_UPDATE_BOT_TOKEN: ${{ secrets.BORINGSSL_UPDATE_BOT_TOKEN }}
+      GH_TOKEN: ${{ secrets.BORINGSSL_UPDATE_BOT_TOKEN }}
+    steps:
+      - name: Check bot token
+        run: |
+          if [[ -z "${BORINGSSL_UPDATE_BOT_TOKEN}" ]]; then
+            echo "BORINGSSL_UPDATE_BOT_TOKEN is required" >&2
+            exit 1
+          fi
+
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check provenance changed
+        id: changed
+        run: |
+          before="${{ github.event.before }}"
+          if [[ "${before}" =~ ^0+$ ]]; then
+            before="${{ github.sha }}^"
+          fi
+
+          if git diff --name-only "${before}" "${{ github.sha }}" | grep -qx '.vac/boringssl-upstream.json'; then
+            echo "should_dispatch=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_dispatch=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Dispatch nim-boringssl update
+        if: steps.changed.outputs.should_dispatch == 'true'
+        run: |
+          gh api repos/vacp2p/nim-boringssl/dispatches \
+            -f event_type=boringssl-updated \
+            -f client_payload[boringssl_sha]="${GITHUB_SHA}" \
+            -f client_payload[boringssl_repository]="${GITHUB_REPOSITORY}" \
+            -f client_payload[boringssl_ref]="${GITHUB_REF_NAME}"

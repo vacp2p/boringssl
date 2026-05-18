@@ -810,7 +810,9 @@ boringssl_crypto_test_sources := \
   crypto/x509/x509_test.cc \
   crypto/x509/x509_time_test.cc \
   crypto/xwing/xwing_test.cc \
-  third_party/fiat/bedrock_platform_test.cc \
+  third_party/fiat/bedrock_platform_test.cc
+
+boringssl_crypto_test_internal_headers := \
   third_party/fiat/bedrock_polyfill_platform.c.inc
 
 boringssl_crypto_test_data := \
@@ -907,10 +909,12 @@ boringssl_crypto_test_data := \
   crypto/pkcs7/test/nss.p7c \
   crypto/pkcs7/test/openssl_crl.p7c \
   crypto/pkcs7/test/sign_cert.pem \
+  crypto/pkcs7/test/sign_cert2.pem \
   crypto/pkcs7/test/sign_key.pem \
   crypto/pkcs7/test/sign_sha1.p7s \
   crypto/pkcs7/test/sign_sha1_key_id.p7s \
   crypto/pkcs7/test/sign_sha256.p7s \
+  crypto/pkcs7/test/sign_sha256_cert2.p7s \
   crypto/pkcs7/test/sign_sha256_key_id.p7s \
   crypto/pkcs7/test/windows.p7c \
   crypto/pkcs8/test/bad1.p12 \

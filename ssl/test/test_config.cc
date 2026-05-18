@@ -390,6 +390,9 @@ const Flag<TestConfig> *FindFlag(const char *name) {
         BoolFlag("-enable-channel-id", &TestConfig::enable_channel_id),
         StringFlag("-send-channel-id", &TestConfig::send_channel_id),
         BoolFlag("-shim-writes-first", &TestConfig::shim_writes_first),
+        StringFlag("-shim-initial-write", &TestConfig::shim_initial_write),
+        IntFlag("-repeat-shim-initial-write",
+                &TestConfig::repeat_shim_initial_write),
         StringFlag("-host-name", &TestConfig::host_name),
         StringFlag("-advertise-alpn", &TestConfig::advertise_alpn),
         StringFlag("-expect-alpn", &TestConfig::expect_alpn),
@@ -569,6 +572,8 @@ const Flag<TestConfig> *FindFlag(const char *name) {
                            &TestConfig::expect_peer_available_trust_anchors),
         OptionalBase64Flag("-requested-trust-anchors",
                            &TestConfig::requested_trust_anchors),
+        Base64Flag("-available-trust-anchors",
+                   &TestConfig::available_trust_anchors),
         OptionalIntFlag("-expect-selected-credential",
                         &TestConfig::expect_selected_credential),
         // Credential flags are stateful. First, use one of the
@@ -642,6 +647,12 @@ const Flag<TestConfig> *FindFlag(const char *name) {
                         &TestConfig::expect_peer_certificate_type),
         Base64Flag("-expect-peer-rpk-sha256",
                    &TestConfig::expect_peer_rpk_sha256),
+        OptionalIntFlag("-request-server-padding",
+                        &TestConfig::request_server_padding),
+        BoolFlag("-expect-server-sent-requested-padding",
+                 &TestConfig::expect_server_sent_requested_padding),
+        BoolFlag("-server-supports-padding",
+                 &TestConfig::server_supports_padding),
     };
     std::sort(ret.begin(), ret.end(), FlagNameComparator{});
     return ret;
@@ -2517,6 +2528,12 @@ bssl::UniquePtr<SSL> TestConfig::NewSSL(
                                         requested_trust_anchors->size())) {
     return nullptr;
   }
+  if (!available_trust_anchors.empty() &&
+      !SSL_set1_available_trust_anchors(ssl.get(),
+                                        available_trust_anchors.data(),
+                                        available_trust_anchors.size())) {
+    return nullptr;
+  }
   if (enable_ocsp_stapling) {
     SSL_enable_ocsp_stapling(ssl.get());
   }
@@ -2646,6 +2663,13 @@ bssl::UniquePtr<SSL> TestConfig::NewSSL(
           reinterpret_cast<const uint8_t *>(quic_early_data_context.data()),
           quic_early_data_context.size())) {
     return nullptr;
+  }
+
+  if (request_server_padding) {
+    SSL_set_server_padding_request(ssl.get(), request_server_padding.value());
+  }
+  if (server_supports_padding) {
+    SSL_set_server_padding_enabled(ssl.get(), 1);
   }
 
   // The compliance policy must be the last thing configured to have defined

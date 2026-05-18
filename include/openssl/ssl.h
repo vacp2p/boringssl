@@ -3284,6 +3284,30 @@ OPENSSL_EXPORT void SSL_get0_peer_available_trust_anchors(const SSL *ssl,
                                                           const uint8_t **out,
                                                           size_t *out_len);
 
+// SSL_CTX_set1_available_trust_anchors configures |ctx|, as a server, to send
+// |ids| as the list of available trust anchors alongside the certificate. It
+// returns one on success and zero on error. This list is used to allow the peer
+// to retry the connection and request a different trust anchor, if the
+// presented certificate is unacceptable. |ids| must be a non-empty list of
+// trust anchor IDs in wire-format (a series of non-empty, 8-bit length-prefixed
+// strings), in order of decreasing preference.
+//
+// Most applications will not need to call this. If not configured, BoringSSL
+// derives available trust anchors from the credential list (see
+// |SSL_CTX_add1_credential|). This function may be used if, for example, the
+// caller filters the available credentials by trust anchor in
+// |SSL_CTX_set_select_certificate_cb|, such that the credential list visible to
+// BoringSSL is incomplete.
+OPENSSL_EXPORT int SSL_CTX_set1_available_trust_anchors(SSL_CTX *ctx,
+                                                        const uint8_t *ids,
+                                                        size_t ids_len);
+
+// SSL_set1_available_trust_anchors behaves like
+// |SSL_CTX_set1_available_trust_anchors| but configures the value on |ssl|.
+OPENSSL_EXPORT int SSL_set1_available_trust_anchors(SSL *ssl,
+                                                    const uint8_t *ids,
+                                                    size_t ids_len);
+
 
 // Server name indication.
 //
@@ -5443,6 +5467,17 @@ OPENSSL_EXPORT size_t SSL_get_client_random(const SSL *ssl, uint8_t *out,
 OPENSSL_EXPORT size_t SSL_get_server_random(const SSL *ssl, uint8_t *out,
                                             size_t max_out);
 
+// SSL_get_signature_algorithm_used returns the signature algorithm that |ssl|
+// used, or will use, to generate a signature in the current handshake. If not
+// applicable (e.g. if |ssl| did not authenticate itself with a certificate), it
+// returns zero.
+//
+// This function only returns a value during the handshake. After the handshake
+// is complete, the value is discarded. If needed after the handshake, callers
+// may save the value at |SSL_CB_HANDSHAKE_DONE| with
+// |SSL_CTX_set_info_callback|.
+OPENSSL_EXPORT uint16_t SSL_get_signature_algorithm_used(const SSL *ssl);
+
 // SSL_get_pending_cipher returns the cipher suite for the current handshake or
 // NULL if one has not been negotiated yet or there is no pending handshake.
 OPENSSL_EXPORT const SSL_CIPHER *SSL_get_pending_cipher(const SSL *ssl);
@@ -6358,6 +6393,7 @@ OPENSSL_EXPORT int SSL_set_compliance_policy(
 OPENSSL_EXPORT enum ssl_compliance_policy_t SSL_get_compliance_policy(
     const SSL *ssl);
 
+
 // Nodejs compatibility section (hidden).
 //
 // These defines exist for node.js, with the hope that we can eliminate the
@@ -6365,6 +6401,35 @@ OPENSSL_EXPORT enum ssl_compliance_policy_t SSL_get_compliance_policy(
 
 #define SSLerr(function, reason) \
   ERR_put_error(ERR_LIB_SSL, 0, reason, __FILE__, __LINE__)
+
+
+// Server Padding
+//
+// The Server Padding extension allows clients to request that servers add
+// additional bytes of padding through EncryptedExtensions on the TLS handshake.
+// This extension is only supported on TLS 1.3 connections. This is a temporary
+// feature supporting an experiment, and will be removed on conclusion of the
+// experiment.
+
+// SSL_set_server_padding_request configures |ssl| as a client to request
+// |num_bytes| of additional padding from servers on the TLS handshake. The
+// client can confirm whether the server sent back the requested amount of
+// padding in the handshake with |SSL_server_sent_requested_padding|.
+OPENSSL_EXPORT void SSL_set_server_padding_request(SSL *ssl,
+                                                   uint16_t num_bytes);
+
+// SSL_set_server_padding_enabled configures |ssl| as a server to respond to
+// the server padding extension with the padding requested by the client.
+// Passing 0 disables support for the server padding extension, 1 enables
+// support for the extension.
+//
+// By default, the extension is not enabled.
+OPENSSL_EXPORT void SSL_set_server_padding_enabled(SSL *ssl, int enabled);
+
+// SSL_server_sent_requested_padding returns 1 if |ssl|, as a client, received
+// the requested amount of padding from the server as requested through
+// |SSL_set_server_padding_request|. Otherwise, it returns 0.
+OPENSSL_EXPORT int SSL_server_sent_requested_padding(const SSL *ssl);
 
 
 // Preprocessor compatibility section (hidden).

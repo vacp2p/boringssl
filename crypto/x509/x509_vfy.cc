@@ -499,9 +499,16 @@ static int check_chain_extensions(X509_STORE_CTX *ctx) {
         return 0;
       }
     }
-    // Check pathlen if not self issued
-    if (i > 1 && !(x->ex_flags & EXFLAG_SI) && x->ex_pathlen != -1 &&
-        plen > x->ex_pathlen + 1) {
+    // Check path length constraints. See steps (l) and (m) of RFC 5280,
+    // section 6.1.4. Note the spec is structured differently from this
+    // logic. Section 6.1.4 runs from root to leaf and does not run on
+    // the leaf. `plen` counts the number of times step (l) would have
+    // run. The constraint is violated if some `x->ex_pathlen`, read in
+    // step (m), is too low to be decremented `plen` times.
+    //
+    // Note that path lengths of self-issued certificates still have to be
+    // considered - they are just not counted as part of the path length!
+    if (i > 1 && x->ex_pathlen != -1 && plen > x->ex_pathlen + 1) {
       ctx->error = X509_V_ERR_PATH_LENGTH_EXCEEDED;
       ctx->error_depth = i;
       ctx->current_cert = x;
@@ -509,8 +516,11 @@ static int check_chain_extensions(X509_STORE_CTX *ctx) {
         return 0;
       }
     }
-    // Increment path length if not self issued
-    if (!(x->ex_flags & EXFLAG_SI)) {
+    // Increment path length if not self issued. As only self-issued
+    // _intermediates_ are skipped in (l) of RFC 5280 (simply because it
+    // operates on certificate chain _edges_), always increment for the first
+    // (the leaf) in the chain.
+    if (i == 0 || !(x->ex_flags & EXFLAG_SI)) {
       plen++;
     }
   }
@@ -559,7 +569,7 @@ static int check_name_constraints(X509_STORE_CTX *ctx) {
     // but if it includes constraints it is to be assumed it expects them
     // to be obeyed.
     for (j = (int)sk_X509_num(ctx->chain) - 1; j > i; j--) {
-      NAME_CONSTRAINTS *nc = FromOpaque(sk_X509_value(ctx->chain, j))->nc;
+      NAME_CONSTRAINTS *nc = FromOpaque(sk_X509_value(ctx->chain, j))->nc.get();
       if (nc) {
         has_name_constraints = 1;
         rv = NAME_CONSTRAINTS_check(x, nc);
@@ -1038,8 +1048,8 @@ static int crl_crldp_check(X509 *x, X509_CRL *crl, int crl_score) {
       return 0;
     }
   }
-  for (size_t i = 0; i < sk_DIST_POINT_num(impl->crldp); i++) {
-    DIST_POINT *dp = sk_DIST_POINT_value(impl->crldp, i);
+  for (size_t i = 0; i < sk_DIST_POINT_num(impl->crldp.get()); i++) {
+    DIST_POINT *dp = sk_DIST_POINT_value(impl->crldp.get(), i);
     // Skip distribution points with a reasons field or a CRL issuer:
     //
     // We do not support CRLs partitioned by reason code. RFC 5280 requires CAs

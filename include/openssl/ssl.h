@@ -1906,8 +1906,6 @@ OPENSSL_EXPORT int SSL_export_keying_material(const SSL *ssl, uint8_t *out,
 // connections within an application-level session will reuse TLS sessions. TLS
 // sessions may be dropped by the client or ignored by the server at any time.
 
-DECLARE_PEM_rw(SSL_SESSION, SSL_SESSION)
-
 // SSL_SESSION_new returns a newly-allocated blank `SSL_SESSION` or NULL on
 // error. This may be useful when writing tests but should otherwise not be
 // used.
@@ -1939,6 +1937,27 @@ OPENSSL_EXPORT int SSL_SESSION_to_bytes_for_ticket(const SSL_SESSION *in,
 OPENSSL_EXPORT SSL_SESSION *SSL_SESSION_from_bytes(const uint8_t *in,
                                                    size_t in_len,
                                                    const SSL_CTX *ctx);
+
+// PEM_read_bio_SSL_SESSION reads an `SSL_SESSION` as a PEM block of type "SSL
+// SESSION PARAMETERS", as described in `PEM_read_bio_SAMPLE`.
+OPENSSL_EXPORT SSL_SESSION *PEM_read_bio_SSL_SESSION(BIO *bio,
+                                                     SSL_SESSION **out,
+                                                     pem_password_cb *cb,
+                                                     void *userdata);
+
+// PEM_read_SSL_SESSION behaves like `PEM_read_bio_SSL_SESSION` but reads from
+// `fp`.
+OPENSSL_EXPORT SSL_SESSION *PEM_read_SSL_SESSION(FILE *fp, SSL_SESSION **out,
+                                                 pem_password_cb *cb,
+                                                 void *userdata);
+
+// PEM_write_bio_SSL_SESSION writes `in` to `bio` as a PEM block of type "SSL
+// SESSION PARAMETERS", as described in `PEM_write_bio_SAMPLE`.
+OPENSSL_EXPORT int PEM_write_bio_SSL_SESSION(BIO *bio, const SSL_SESSION *in);
+
+// PEM_write_SSL_SESSION behaves like `PEM_write_bio_SSL_SESSION` but writes to
+// `fp`.
+OPENSSL_EXPORT int PEM_write_SSL_SESSION(FILE *fp, const SSL_SESSION *in);
 
 // SSL_SESSION_get_version returns a string describing the TLS or DTLS version
 // `session` was established at. For example, "TLSv1.2" or "DTLSv1".
@@ -2004,8 +2023,7 @@ SSL_SESSION_get0_peer_certificates(const SSL_SESSION *session);
 
 // SSL_SESSION_get0_peer_rpk returns the peer raw public key stored in
 // `session`, or NULL if the peer did not send a raw public key.
-OPENSSL_EXPORT const EVP_PKEY *SSL_SESSION_get0_peer_rpk(
-    const SSL_SESSION *session);
+OPENSSL_EXPORT EVP_PKEY *SSL_SESSION_get0_peer_rpk(const SSL_SESSION *session);
 
 // SSL_SESSION_get0_signed_cert_timestamp_list sets `*out` and `*out_len` to
 // point to `*out_len` bytes of SCT information stored in `session`. This is
@@ -2637,7 +2655,7 @@ OPENSSL_EXPORT int SSL_CTX_set1_group_ids_with_flags(SSL_CTX *ctx,
 
 // SSL_set1_group_ids_with_flags sets the preferred groups for `ssl` to
 // `group_ids`, using the corresponding `flags` for each element, which is a set
-// of SSL_GROUP_FLAG_* values ORed toegether. Each element of `group_ids` should
+// of SSL_GROUP_FLAG_* values ORed together. Each element of `group_ids` should
 // be a unique one of the `SSL_GROUP_*` constants. If `group_ids` is empty, a
 // default list of groups and flags defaulting to zero will be set instead.
 // `group_ids` and `flags` should both have `num_group_ids` elements.  It
@@ -4295,7 +4313,7 @@ struct ssl_quic_method_st {
   int (*send_alert)(SSL *ssl, enum ssl_encryption_level_t level, uint8_t alert);
 };
 
-// SSL_quic_max_handshake_flight_len returns returns the maximum number of bytes
+// SSL_quic_max_handshake_flight_len returns the maximum number of bytes
 // that may be received at the given encryption level. This function should be
 // used to limit buffering in the QUIC implementation.
 //
@@ -4890,7 +4908,7 @@ OPENSSL_EXPORT int SSL_CTX_set_record_protocol_version(SSL_CTX *ctx,
 // retains its final flight for retransmission in case of loss. There is no
 // explicit protocol signal for when this completes, though after receiving
 // application data and/or a timeout it is likely that this is no longer needed.
-// BoringSSL does not currently evaluate either condition and leaves it it to
+// BoringSSL does not currently evaluate either condition and leaves it to
 // the caller to determine whether this is now unnecessary. This applies when
 // `ssl` is a server for full handshakes and when `ssl` is a client for full
 // handshakes.
@@ -5349,24 +5367,6 @@ OPENSSL_EXPORT void SSL_CTX_set_dos_protection_cb(
 // respected on clients.
 OPENSSL_EXPORT void SSL_CTX_set_reverify_on_resume(SSL_CTX *ctx, int enabled);
 
-// SSL_set_enforce_rsa_key_usage configures whether, when `ssl` is a client
-// negotiating TLS 1.2 or below, the keyUsage extension of RSA leaf server
-// certificates will be checked for consistency with the TLS usage. In all other
-// cases, this check is always enabled.
-//
-// This parameter may be set late; it will not be read until after the
-// certificate verification callback.
-OPENSSL_EXPORT void SSL_set_enforce_rsa_key_usage(SSL *ssl, int enabled);
-
-// SSL_was_key_usage_invalid returns one if `ssl`'s handshake succeeded despite
-// using TLS parameters which were incompatible with the leaf certificate's
-// keyUsage extension. Otherwise, it returns zero.
-//
-// If `SSL_set_enforce_rsa_key_usage` is enabled or not applicable, this
-// function will always return zero because key usages will be consistently
-// checked.
-OPENSSL_EXPORT int SSL_was_key_usage_invalid(const SSL *ssl);
-
 // SSL_ST_* are possible values for `SSL_state`, the bitmasks that make them up,
 // and some historical values for compatibility. Only `SSL_ST_INIT` and
 // `SSL_ST_OK` are ever returned.
@@ -5739,7 +5739,7 @@ OPENSSL_EXPORT int SSL_get_shared_sigalgs(SSL *ssl, int idx, int *psign,
 // i2d_SSL_SESSION serializes `in`, as described in `i2d_SAMPLE`.
 //
 // Use `SSL_SESSION_to_bytes` instead.
-OPENSSL_EXPORT int i2d_SSL_SESSION(SSL_SESSION *in, uint8_t **pp);
+OPENSSL_EXPORT int i2d_SSL_SESSION(const SSL_SESSION *in, uint8_t **pp);
 
 // d2i_SSL_SESSION parses a serialized session from the `len` bytes pointed to
 // by `*inp`, as described in `d2i_SAMPLE`.

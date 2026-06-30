@@ -733,7 +733,7 @@ static enum ssl_hs_wait_t do_read_server_hello(SSL_HANDSHAKE *hs) {
     // the session was only offered in ECH ClientHelloInner), this was the
     // TLS 1.3 compatibility mode session ID. As we know this is not a session
     // the server knows about, any server resuming it is in error. Reject the
-    // first connection deterministicly, rather than installing an invalid
+    // first connection deterministically, rather than installing an invalid
     // session into the session cache. https://crbug.com/796910
     if (ssl->session == nullptr || ssl->s3->ech_status == ssl_ech_rejected) {
       OPENSSL_PUT_ERROR(SSL, SSL_R_SERVER_ECHOED_INVALID_SESSION_ID);
@@ -1400,23 +1400,13 @@ static enum ssl_hs_wait_t do_send_client_key_exchange(SSL_HANDSHAKE *hs) {
     CBS leaf_cbs;
     CRYPTO_BUFFER_init_CBS(leaf, &leaf_cbs);
 
-    // Check the key usage matches the cipher suite. We do this unconditionally
-    // for non-RSA certificates. In particular, it's needed to distinguish ECDH
-    // certificates, which we do not support, from ECDSA certificates.
-    // Historically, we have not checked RSA key usages, so it is controlled by
-    // a flag for now. See https://crbug.com/795089.
-    // Key usage is only checked for X.509 certs. (RPKs have no keyUsage to
-    // enforce.)
+    // Check the key usage matches the cipher suite. Key usage is only checked
+    // for X.509 certs. (RPKs have no keyUsage to enforce.)
     ssl_key_usage_t intended_use = (alg_k & SSL_kRSA)
                                        ? key_usage_encipherment
                                        : key_usage_digital_signature;
     if (!ssl_cert_check_key_usage(&leaf_cbs, intended_use)) {
-      if (hs->config->enforce_rsa_key_usage ||
-          EVP_PKEY_id(hs->peer_pubkey.get()) != EVP_PKEY_RSA) {
-        return ssl_hs_error;
-      }
-      ERR_clear_error();
-      ssl->s3->was_key_usage_invalid = true;
+      return ssl_hs_error;
     }
   }
 

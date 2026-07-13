@@ -18,7 +18,10 @@ use alloc::boxed::Box;
 use core::{
     ffi::c_int,
     marker::PhantomData,
-    mem::forget,
+    mem::{
+        forget,
+        transmute, //
+    },
     ptr::NonNull,
     task::Waker, //
 };
@@ -28,7 +31,10 @@ use crate::{
         ConnectionMode,
         ProtocolVersion, //
     },
-    connection::methods::waker_data_ref_from_ssl,
+    connection::{
+        lifecycle::TlsConnectionInHandshake,
+        methods::waker_data_ref_from_ssl, //
+    },
     context::TlsMode,
     errors::{
         Error,
@@ -113,6 +119,17 @@ where
         self
     }
 
+    fn in_handshake(&mut self) -> TlsConnectionInHandshake<'_, R, M> {
+        unsafe {
+            // Safety:
+            // - the connection is still technically in handshake phase, so it is safe for internal
+            //   use to configure the handshake through the associated methods.
+            // - `TlsConnection` is a transparent wrapper around `NonNull<bssl_sys::SSL>`.
+            // - the `Role` and `Mode` are matching.
+            TlsConnectionInHandshake(transmute(&mut self.ptr))
+        }
+    }
+
     /// Set the session for resumption.
     pub fn with_session(&mut self, session: &TlsSession) -> &mut Self {
         self.as_in_handshake().set_session(session);
@@ -130,8 +147,8 @@ where
 
 /// TLS Connection
 ///
-/// `Role` is expected to be either [`Server`] or [`Client`] and
-/// `Mode` is expected to be either [`TlsMode`] or [`QuicMode`].
+/// `Role` is expected to be either [`crate::context::Server`] or [`crate::context::Client`] and
+/// `Mode` is expected to be either [`crate::context::TlsMode`] or [`crate::context::QuicMode`].
 /// These generics will govern the capabilities that respective TLS connection role can access,
 // NOTE: any method that involves I/O must require exclusive access, enforced by requiring `&mut`.
 #[repr(transparent)]

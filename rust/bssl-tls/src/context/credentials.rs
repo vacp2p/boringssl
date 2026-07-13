@@ -25,15 +25,21 @@ use crate::{
     config::ConfigurationError,
     context::{
         CertificateCache,
-        SupportedMode, //
+        SupportedMode,
+        methods::HasPrivateKeyMethods, //
     },
     credentials::{
         CertificateType,
         CertificateVerificationMode,
+        PrivateKeyDelegate,
         SignatureAlgorithm,
         TlsCredential,
         VerifyCertificate,
-        cert_cb, //
+        cert_cb,
+        early_callback::{
+            EarlyCallback,
+            early_select_cert_cb, //
+        }, //
     },
     errors::Error,
     ffi::slice_into_ffi_raw_parts,
@@ -64,6 +70,30 @@ where
                 bssl_sys::SSL_CTX_set1_buffer_pool(ctx, null_mut());
             }
         }
+        self
+    }
+
+    /// Set the private key method.
+    ///
+    /// This private key method delegation may be replaced the next moment when
+    /// a new TLS private key is supplied.
+    pub fn with_private_key_delegate(
+        &mut self,
+        key_method: Option<Box<dyn PrivateKeyDelegate>>,
+    ) -> &mut Self {
+        let ctx = self.ptr();
+        if key_method.is_some() {
+            unsafe {
+                // Safety: we only install our own vtable.
+                bssl_sys::SSL_CTX_set_private_key_method(ctx, <M as HasPrivateKeyMethods>::METHODS);
+            }
+        } else {
+            unsafe {
+                // Safety: we only uninstall the vtable.
+                bssl_sys::SSL_CTX_set_private_key_method(ctx, core::ptr::null());
+            }
+        }
+        self.get_context_methods().private_key_methods = key_method;
         self
     }
 
@@ -130,6 +160,36 @@ where
             bssl_sys::SSL_CTX_set_custom_verify(conn, mode as _, None);
         }
         self.get_context_methods().verify_certificate_methods = None;
+        self
+    }
+
+    /// Set custom certificate selection callback.
+    ///
+    /// See [`EarlyCallback`] for its semantics.
+    pub fn with_early_callback<S>(&mut self, handler: S) -> &mut Self
+    where
+        S: EarlyCallback<M> + 'static,
+    {
+        let ctx = self.ptr();
+        unsafe {
+            // Safety: we only install our own vtable.
+            bssl_sys::SSL_CTX_set_select_certificate_cb(
+                ctx,
+                Some(early_select_cert_cb::<M, super::methods::RustContextMethods<M>>),
+            );
+        }
+        self.get_context_methods().early_callback_handler = Some(Box::new(handler) as _);
+        self
+    }
+
+    /// Remove custom certificate selection callback.
+    pub fn without_early_callback(&mut self) -> &mut Self {
+        let ctx = self.ptr();
+        unsafe {
+            // Safety: we only uninstall the vtable.
+            bssl_sys::SSL_CTX_set_select_certificate_cb(ctx, None);
+        }
+        self.get_context_methods().early_callback_handler = None;
         self
     }
 

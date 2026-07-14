@@ -36,7 +36,10 @@ use crate::{
         TlsConnectionBuilder,
         methods::HasTlsConnectionMethod, //
     },
-    context::methods::HasTlsContextMethod,
+    context::methods::{
+        HasPrivateKeyMethods,
+        HasTlsContextMethod, //
+    },
     errors::Error,
     has_duplicates, //
 };
@@ -62,7 +65,10 @@ pub enum QuicMode {}
 pub(crate) trait HasBasicIo {}
 
 /// A collection of supported mode of operations.
-pub trait SupportedMode: HasTlsContextMethod + HasTlsConnectionMethod {}
+pub trait SupportedMode:
+    HasTlsContextMethod + HasTlsConnectionMethod + HasPrivateKeyMethods
+{
+}
 
 impl SupportedMode for TlsMode {}
 impl SupportedMode for DtlsMode {}
@@ -74,7 +80,7 @@ impl HasBasicIo for DtlsMode {}
 /// General TLS configuration
 ///
 /// The `Mode` generic can be either [`TlsMode`] or [`QuicMode`].
-/// This generic governs the kind of [`TlsConnection`] that can be constructed.
+/// This generic governs the kind of [`crate::connection::TlsConnection`] that can be constructed.
 pub struct TlsContextBuilder<Mode = TlsMode> {
     ptr: NonNull<bssl_sys::SSL_CTX>,
     _p: PhantomData<fn() -> Mode>,

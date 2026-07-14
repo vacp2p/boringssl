@@ -629,7 +629,7 @@ const Flag<TestConfig> *FindFlag(const char *name) {
         CredentialFlag(SetValueFlag("-psk-importer-sha384",
                                     &CredentialConfig::psk_hash, EVP_sha384())),
         CredentialFlag(
-            Base64Flag("-trust-anchor-id", &CredentialConfig::trust_anchor_id)),
+            Base64Flag("-cert-properties", &CredentialConfig::cert_properties)),
         IntFlag("-private-key-delay-ms", &TestConfig::private_key_delay_ms),
         BoolFlag("-resumption-across-names-enabled",
                  &TestConfig::resumption_across_names_enabled),
@@ -1640,10 +1640,12 @@ static bssl::UniquePtr<SSL_CREDENTIAL> CredentialFromConfig(
     SSL_CREDENTIAL_set_must_match_issuer(cred.get(), 1);
   }
 
-  if (!cred_config.trust_anchor_id.empty()) {
-    if (!SSL_CREDENTIAL_set1_trust_anchor_id(
-            cred.get(), cred_config.trust_anchor_id.data(),
-            cred_config.trust_anchor_id.size())) {
+  if (!cred_config.cert_properties.empty()) {
+    bssl::UniquePtr<CRYPTO_BUFFER> buf(
+        CRYPTO_BUFFER_new(cred_config.cert_properties.data(),
+                          cred_config.cert_properties.size(), nullptr));
+    if (buf == nullptr ||
+        !SSL_CREDENTIAL_set1_certificate_properties(cred.get(), buf.get())) {
       return nullptr;
     }
   }
@@ -2120,6 +2122,7 @@ bssl::UniquePtr<SSL_CTX> TestConfig::SetupCtx(SSL_CTX *old_ctx) const {
 
   if (enable_grease) {
     SSL_CTX_set_grease_enabled(ssl_ctx.get(), 1);
+    SSL_CTX_set_grease_sigalgs_enabled(ssl_ctx.get(), 1);
   }
 
   if (permute_extensions) {

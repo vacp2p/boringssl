@@ -110,14 +110,14 @@ fn test_private_key_methods() -> Result<(), Box<dyn std::error::Error + Send + S
         let mut builder = TlsCredentialBuilder::new();
         builder
             .with_certificate_chain(&[server_cert, ca])?
-            .with_private_key_delegate(Some(crate::credentials::AsyncPrivateKeyDelegateAdapter(
+            .with_private_key_delegate(crate::credentials::AsyncPrivateKeyDelegateAdapter(
                 private_key_method,
-            )));
+            ));
         builder.build().unwrap()
     };
     server_ctx_builder.with_credential(server_cred)?;
     let server_ctx = server_ctx_builder.build();
-    let mut server_conn = server_ctx.new_server_connection(None)?.build();
+    let mut server_conn = server_ctx.new_server_connection().build();
 
     let mut client_ctx_builder = TlsContextBuilder::new_tls();
     let mut cert_store = X509StoreBuilder::new();
@@ -127,7 +127,7 @@ fn test_private_key_methods() -> Result<(), Box<dyn std::error::Error + Send + S
     let cert_store = cert_store.build();
     client_ctx_builder.with_certificate_store(&cert_store);
     let client_ctx = client_ctx_builder.build();
-    let mut client_conn = client_ctx.new_client_connection(None)?;
+    let mut client_conn = client_ctx.new_client_connection();
     client_conn.with_certificate_verification_mode(CertificateVerificationMode::PeerCertMandatory);
     let mut client_conn = client_conn.build();
     client_conn
@@ -163,8 +163,9 @@ fn test_private_key_methods() -> Result<(), Box<dyn std::error::Error + Send + S
         }
 
         let mut message = [0; 21];
+        let mut recv_buf = crate::ffi::ReceiveBuffer::new(&mut message);
         assert!(matches!(
-            server_conn.as_pin_mut().async_read(&mut message).await?,
+            server_conn.as_pin_mut().async_read(&mut recv_buf).await?,
             IoStatus::Ok(21)
         ));
         assert_eq!(message, *b"BoringSSL is awesome!");

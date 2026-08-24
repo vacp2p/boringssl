@@ -48,6 +48,11 @@ OPENSSL_EXPORT const EVP_CIPHER *EVP_aes_256_ecb(void);
 OPENSSL_EXPORT const EVP_CIPHER *EVP_aes_256_cbc(void);
 OPENSSL_EXPORT const EVP_CIPHER *EVP_aes_256_ctr(void);
 OPENSSL_EXPORT const EVP_CIPHER *EVP_aes_256_ofb(void);
+
+// EVP_aes_256_xts implements AES-256-XTS. Unlike other `EVP_CIPHER`s, this
+// object is single-shot. It does not support splitting a single operation (one
+// set of key, IV, and input) into multiple `EVP_EncryptUpdate_ex` or
+// `EVP_DecryptUpdate_ex` calls.
 OPENSSL_EXPORT const EVP_CIPHER *EVP_aes_256_xts(void);
 
 // EVP_enc_null returns a 'cipher' that passes plaintext through as
@@ -755,9 +760,6 @@ struct evp_cipher_ctx_st {
   int final_used;
 
   uint8_t final[EVP_MAX_BLOCK_LENGTH];  // possible final block
-
-  // Has this structure been rendered unusable by a failure.
-  int poisoned;
 } /* EVP_CIPHER_CTX */;
 
 typedef struct evp_cipher_info_st {

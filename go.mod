@@ -1,6 +1,6 @@
 module boringssl.googlesource.com/boringssl.git
 
-go 1.25.8
+go 1.26.5
 
 require (
 	cloud.google.com/go/storage v1.62.3
@@ -10,6 +10,7 @@ require (
 	github.com/hexops/gotextdiff v1.0.3
 	golang.org/x/crypto v0.52.0
 	golang.org/x/net v0.55.0
+	golang.org/x/term v0.43.0
 	google.golang.org/api v0.283.0
 )
 
@@ -50,7 +51,6 @@ require (
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto v0.0.0-20260319201613-d00831a3d3e7 // indirect

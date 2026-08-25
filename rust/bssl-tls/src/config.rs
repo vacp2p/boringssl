@@ -14,7 +14,6 @@
 
 //! TLS Configurations
 
-use alloc::string::String;
 use core::ffi::c_int;
 
 use bssl_macros::bssl_enum;
@@ -22,6 +21,7 @@ use bssl_macros::bssl_enum;
 bssl_enum! {
     /// Protocol version for TLS or DTLS
     #[derive(Clone, Copy, PartialEq, Eq)]
+    #[non_exhaustive]
     pub enum ProtocolVersion: u16 {
         /// TLS version 1.2
         Tls12 = bssl_sys::TLS1_2_VERSION as u16,
@@ -63,6 +63,7 @@ bitflags::bitflags! {
 bssl_enum! {
     /// Key exchange groups for TLS or DTLS
     #[derive(Clone, Copy, PartialEq, Eq)]
+    #[non_exhaustive]
     pub enum KeyExchangeGroups: u16 {
         /// Key exchange using `ECDH-P256`
         Secp256r1 = bssl_sys::SSL_GROUP_SECP256R1 as u16,
@@ -92,6 +93,7 @@ bitflags::bitflags! {
 
 /// Configuration errors
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ConfigurationError {
     /// Some parameters are specified twice in the list.
     DuplicatedParameters,
@@ -110,6 +112,8 @@ pub enum ConfigurationError {
     InvalidIp,
     /// Invalid parameters.
     InvalidParameters,
+    /// Invalid ALPN protocols.
+    InvalidAlpnProtocols,
 }
 
 impl core::fmt::Display for ConfigurationError {
@@ -127,24 +131,9 @@ impl core::fmt::Display for ConfigurationError {
             ConfigurationError::ValueOutOfRange => f.write_str("value is out of range"),
             ConfigurationError::InvalidIp => f.write_str("invalid IP address"),
             ConfigurationError::InvalidParameters => f.write_str("invalid parameters"),
+            ConfigurationError::InvalidAlpnProtocols => f.write_str("invalid ALPN protocols"),
         }
     }
-}
-
-/// Cipher information
-#[derive(Clone)]
-#[non_exhaustive]
-pub struct CipherInfo {
-    /// Protocol ID as assigned by [IANA](https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml#tls-parameters-4)
-    pub id: u32,
-    /// IETF Name of the cipher
-    pub ietf_name: String,
-    /// Indicates whether this cipher is an AEAD cipher
-    pub is_aead: bool,
-    /// Indicates whether this cipher is a block cipher
-    pub is_block_cipher: bool,
-    /// Cipher strength in bits
-    pub strength: u16,
 }
 
 /// Supported cipher suites as registered with [IANA].
@@ -240,50 +229,4 @@ impl CipherSuite {
     /// TLS 1.2 cipher suite `TLS_RSA_WITH_3DES_EDE_CBC_SHA` from RFC 5246.
     pub const RsaWith3desEdeCbcSha: Self =
         Self(bssl_sys::SSL_CIPHER_RSA_WITH_3DES_EDE_CBC_SHA as u16);
-}
-
-bssl_enum! {
-    /// Compliance Policy.
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    pub enum CompliancePolicy: u8 {
-        /// FIPS 202205
-        ///
-        /// This policy configures a TLS connection to use:
-        /// - TLS 1.2 or 1.3;
-        /// - For TLS 1.2, only `ECDHE_[RSA|ECDSA]_WITH_AES_*_GCM_SHA*`;
-        /// - For TLS 1.3, only `AES-GCM`;
-        /// - P-256 or P-384 for key agreement;
-        /// - For server signatures, only PKCS#1/PSS with SHA256/384/512,
-        ///   or ECDSA with P-256 or P-384 and SHA256/SHA384.
-        Fips202205 = bssl_sys::ssl_compliance_policy_t_ssl_compliance_policy_fips_202205 as u8,
-        /// WPA3-192 202304
-        ///
-        /// This policy configures a TLS connection to use:
-        /// - TLS 1.2 or 1.3.
-        /// - For TLS 1.2, only `TLS_ECDHE_[ECDSA|RSA]_WITH_AES_256_GCM_SHA384`.
-        /// - For TLS 1.3, only `AES-256-GCM`.
-        /// - P-384 for key agreement.
-        /// - For handshake signatures, only ECDSA with P-384 and SHA-384, or RSA
-        ///     with SHA-384 or SHA-512.
-        ///
-        /// No limitations on the certificate chain nor leaf public key are imposed,
-        /// other than by the supported signature algorithms.
-        /// But WPA3's "192-bit" mode requires at least P-384 or 3072-bit RSA along the chain.
-        /// The caller must enforce this themselves on the verified chain using functions such as
-        /// [`crate::credentials::TlsCredentialBuilder::with_certificate_chain`].
-        ///
-        /// Note that this setting is less secure than the default.
-        /// The implementation risks of using a more obscure primitive like P-384 dominate other
-        /// considerations.
-        Wpa3_192_202304 = bssl_sys::ssl_compliance_policy_t_ssl_compliance_policy_wpa3_192_202304 as u8,
-        /// CNSA 202407
-        ///
-        /// This policy configures a TLS connection to use:
-        /// - For TLS 1.3, AES-256-GCM over AES-128-GCM over ChaCha20-Poly1305.
-        ///
-        /// I.e. it ensures that AES-GCM will be used whenever the client supports it.
-        /// The cipher suite configuration mini-language can be used to similarly
-        /// configure prior TLS versions if they are enabled.
-        Cnsa202407 = bssl_sys::ssl_compliance_policy_t_ssl_compliance_policy_cnsa_202407 as u8,
-    }
 }

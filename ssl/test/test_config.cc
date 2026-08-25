@@ -351,6 +351,8 @@ const Flag<TestConfig> *FindFlag(const char *name) {
         StringFlag("-trust-cert", &TestConfig::trust_cert),
         StringFlag("-expect-server-name", &TestConfig::expect_server_name),
         BoolFlag("-enable-ech-grease", &TestConfig::enable_ech_grease),
+        BoolFlag("-reject-unusable-ech-config",
+                 &TestConfig::reject_unusable_ech_config),
         Base64VectorFlag("-ech-server-config", &TestConfig::ech_server_configs),
         Base64VectorFlag("-ech-server-key", &TestConfig::ech_server_keys),
         IntVectorFlag("-ech-is-retry-config", &TestConfig::ech_is_retry_config),
@@ -526,7 +528,6 @@ const Flag<TestConfig> *FindFlag(const char *name) {
         StringFlag("-expect-msg-callback", &TestConfig::expect_msg_callback),
         BoolFlag("-allow-false-start-without-alpn",
                  &TestConfig::allow_false_start_without_alpn),
-        BoolFlag("-handoff", &TestConfig::handoff),
         BoolFlag("-handshake-hints", &TestConfig::handshake_hints),
         BoolFlag("-allow-hint-mismatch", &TestConfig::allow_hint_mismatch),
         BoolFlag("-use-ocsp-callback", &TestConfig::use_ocsp_callback),
@@ -2451,6 +2452,9 @@ bssl::UniquePtr<SSL> TestConfig::NewSSL(
   }
   if (enable_ech_grease) {
     SSL_set_enable_ech_grease(ssl.get(), 1);
+  }
+  if (reject_unusable_ech_config) {
+    SSL_set_reject_unusable_ech_config(ssl.get(), 1);
   }
   if (!ech_config_list.empty() &&
       !SSL_set1_ech_config_list(ssl.get(), ech_config_list.data(),

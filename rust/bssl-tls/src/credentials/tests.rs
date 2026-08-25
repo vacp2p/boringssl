@@ -12,13 +12,52 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bssl_x509::keys::PrivateKeyAlgorithm;
+use std::{
+    future::{
+        Ready,
+        ready, //
+    },
+    sync::{
+        Arc,
+        Mutex, //
+    }, //
+};
+
+use bssl_crypto::ecdsa::ParsedPrivateKey;
+use bssl_x509::{
+    keys::{
+        PrivateKey,
+        PrivateKeyAlgorithm, //
+    },
+    params::Trust, //
+};
 use futures::future::try_join;
 
 use super::*;
 use crate::{
-    context::TlsMode,
-    tests::create_mock_pipe, //
+    connection::lifecycle::{
+        HandshakeComplete,
+        HandshakeInfo, //
+    },
+    context::{
+        TlsContextBuilder,
+        TlsMode, //
+    },
+    errors::Error,
+    ffi::ReceiveBuffer,
+    tests::{
+        P256_SERVER_CERT,
+        P256_SERVER_CERT_DER,
+        P256_SERVER_KEY,
+        P256_SERVER_KEY_DER,
+        RSA_SERVER_CERT,
+        RSA_SERVER_CERT_DER,
+        TEST_CA_DN,
+        create_mock_pipe,
+        load_trust_store,
+        load_x509_credential,
+        run_async_handshake, //
+    }, //
 };
 
 #[test]
@@ -29,51 +68,40 @@ fn parse_none() {
 
 #[test]
 fn parse_one() {
-    const PEM: &'_ [u8] = b"
-Hello world!
------BEGIN CERTIFICATE-----
-SGVsbG8gV29ybGQh
------END CERTIFICATE-----
-";
-    let certs = Certificate::parse_all_from_pem(PEM, None).unwrap();
+    let pem = [b"extra data\n", P256_SERVER_CERT, b"\nextra data\n"].concat();
+    let certs = Certificate::parse_all_from_pem(&pem, None).unwrap();
     assert_eq!(certs.len(), 1);
-    assert_eq!(certs[0].as_der_bytes(), b"Hello World!");
+    assert_eq!(certs[0].as_der_bytes(), P256_SERVER_CERT_DER);
 }
 
 #[test]
 fn parse_all_pems() {
-    const PEM: &'_ [u8] = b"
-Hello world!
------BEGIN CERTIFICATE-----
-SGVsbG8gV29ybGQh
------END CERTIFICATE-----
-BoringSSL is ...
------BEGIN CERTIFICATE-----
-QXdlc29tZSBCb3JpbmdTU0wh
------END CERTIFICATE-----
-Trailing bits ...
-";
-    let certs = Certificate::parse_all_from_pem(PEM, None).unwrap();
+    let pem = [
+        b"extra data\n",
+        P256_SERVER_CERT,
+        b"\nextra data\n",
+        RSA_SERVER_CERT,
+        b"\nextra data\n",
+    ]
+    .concat();
+    let certs = Certificate::parse_all_from_pem(&pem, None).unwrap();
     assert_eq!(certs.len(), 2);
-    assert_eq!(certs[0].as_der_bytes(), b"Hello World!");
-    assert_eq!(certs[1].as_der_bytes(), b"Awesome BoringSSL!");
+    assert_eq!(certs[0].as_der_bytes(), P256_SERVER_CERT_DER);
+    assert_eq!(certs[1].as_der_bytes(), RSA_SERVER_CERT_DER);
 }
 
 #[test]
 fn parse_all_pems_fail() {
-    const PEM: &'_ [u8] = b"
-Hello world!
------BEGIN CERTIFICATE-----
-SGVsbG8gV29ybGQh
------END CERTIFICATE-----
-BoringSSL is ...
------BEGIN CERTIFICATE-----
-QXdlc29tZSBCb3JpbmdTU0wh
------END CERTIFICATE-----
-But something badddd...
------BEGIN CERTIFICATE-----
-";
-    let _ = Certificate::parse_all_from_pem(PEM, None).unwrap_err();
+    let pem = [
+        b"extra data\n",
+        P256_SERVER_CERT,
+        b"\nextra data\n",
+        RSA_SERVER_CERT,
+        // Invalid PEM block.
+        b"\n-----BEGIN CERTIFICATE-----\n",
+    ]
+    .concat();
+    let _ = Certificate::parse_all_from_pem(&pem, None).unwrap_err();
 }
 
 #[test]
@@ -142,25 +170,49 @@ lTU7GxRvRinKa52GnUNLqxkmTTcFegGMevICfN7JUaUTDiEQGGJ6jNw=
 
 #[test]
 fn psk_tls13_handshake() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let key = b"test-key-test-key-test-key-test-key";
-    let identity = b"test-identity";
+    let key_a = b"test-key-aaaa-test-key-aaaa-aaaa";
+    let key_b = b"test-key-bbbb-test-key-bbbb-bbbb";
+    let identity_a = b"identity-a";
+    let identity_b = b"identity-b";
     let context = b"test-context";
 
-    let cred = TlsCredential::new_pre_shared_key(key, identity, PskHash::Sha256, context)?;
+    let cred_a = TlsCredential::new_pre_shared_key(key_a, identity_a, PskHash::Sha256, context)?;
+    let cred_b = TlsCredential::new_pre_shared_key(key_b, identity_b, PskHash::Sha256, context)?;
 
-    let mut server_ctx = crate::context::TlsContextBuilder::new_tls();
-    server_ctx.with_credential(cred.clone())?;
-
-    let mut client_ctx = crate::context::TlsContextBuilder::new_tls();
-    client_ctx.with_credential(cred)?;
-
+    // Server only has cred_b, so it must select cred_b.
+    let mut server_ctx = TlsContextBuilder::new_tls();
+    server_ctx.with_credential(cred_b.clone())?;
     let server_ctx = server_ctx.build();
+
+    // Client offers both cred_a and cred_b.
+    let mut client_ctx = TlsContextBuilder::new_tls();
+    client_ctx
+        .with_credential(cred_a)?
+        .with_credential(cred_b)?;
     let client_ctx = client_ctx.build();
 
     let (client_socket, server_socket, mut executor) = create_mock_pipe();
 
-    let mut client_conn = client_ctx.new_client_connection(None)?.build();
-    let mut server_conn = server_ctx.new_server_connection(None)?.build();
+    let selected_cred: Arc<Mutex<Option<TlsCredential>>> = Arc::new(Mutex::new(None));
+
+    struct Callback {
+        selected: Arc<Mutex<Option<TlsCredential>>>,
+    }
+
+    impl HandshakeComplete for Callback {
+        fn handshake_complete(&mut self, hs: &HandshakeInfo) {
+            let cred = hs.get_selected_credential();
+            *self.selected.lock().unwrap() = cred;
+        }
+    }
+
+    let mut server_builder = server_ctx.new_server_connection();
+    server_builder.with_handshake_complete_callback(Callback {
+        selected: selected_cred.clone(),
+    });
+    let mut server_conn = server_builder.build();
+
+    let mut client_conn = client_ctx.new_client_connection().build();
 
     client_conn.set_io(client_socket)?;
     server_conn.set_io(server_socket)?;
@@ -168,19 +220,32 @@ fn psk_tls13_handshake() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     let test_future = async {
         let client_handshake = async {
             assert!(client_conn.async_handshake().await?.is_none());
-            Ok::<(), crate::errors::Error>(())
+            Ok::<(), Error>(())
         };
 
         let server_handshake = async {
             assert!(server_conn.async_handshake().await?.is_none());
-            Ok::<(), crate::errors::Error>(())
+            Ok::<(), Error>(())
         };
 
         try_join(client_handshake, server_handshake).await?;
-        Ok::<(), crate::errors::Error>(())
+        Ok::<(), Error>(())
     };
 
     executor.run(test_future)?;
+    let client_conn = client_ctx.new_client_connection().build();
+    let server_conn = server_ctx.new_server_connection().build();
+    run_async_handshake(client_conn, server_conn)?;
+
+    let selected = selected_cred.lock().unwrap();
+    let selected = selected
+        .as_ref()
+        .expect("handshake complete callback should have been called");
+    assert_eq!(
+        selected.get_pre_shared_key_id(),
+        Some(identity_b.as_slice()),
+        "server should have selected cred_b (identity-b)"
+    );
 
     Ok(())
 }
@@ -205,16 +270,16 @@ fn psk_tls13_handshake_sync() -> Result<(), Box<dyn std::error::Error + Send + S
 
     let cred = TlsCredential::new_pre_shared_key(key, identity, PskHash::Sha256, context)?;
 
-    let mut server_ctx = crate::context::TlsContextBuilder::new_tls();
+    let mut server_ctx = TlsContextBuilder::new_tls();
     server_ctx.with_credential(cred.clone())?;
     let server_ctx = server_ctx.build();
 
-    let mut client_ctx = crate::context::TlsContextBuilder::new_tls();
+    let mut client_ctx = TlsContextBuilder::new_tls();
     client_ctx.with_credential(cred)?;
     let client_ctx = client_ctx.build();
 
-    let mut client_conn = client_ctx.new_client_connection(None)?.build();
-    let mut server_conn = server_ctx.new_server_connection(None)?.build();
+    let mut client_conn = client_ctx.new_client_connection().build();
+    let mut server_conn = server_ctx.new_server_connection().build();
 
     client_conn.set_split_io(client_reader, client_writer)?;
     server_conn.set_split_io(server_reader, server_writer)?;
@@ -231,45 +296,23 @@ fn psk_tls13_handshake_sync() -> Result<(), Box<dyn std::error::Error + Send + S
     Ok(())
 }
 
-unsafe extern "C" fn accept_any_verify(
-    _ssl: *mut bssl_sys::SSL,
-    _out_alert: *mut u8,
-) -> bssl_sys::ssl_verify_result_t {
-    bssl_sys::ssl_verify_result_t_ssl_verify_ok
-}
-
-#[test]
-fn rpk_tls13_handshake() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use bssl_x509::keys::PrivateKey;
-
-    let priv_key = PrivateKey::from_pem(crate::tests::RSA_SERVER_KEY, || unreachable!()).unwrap();
-
-    let cred = TlsCredentialBuilder::<RawPublicKeyMode>::new_raw_public_key(priv_key)
-        .build()
-        .unwrap();
-
-    let mut server_ctx = crate::context::TlsContextBuilder::new_tls();
-    server_ctx.with_credential(cred.clone())?;
+/// Helper: perform an RPK handshake with the given server credential and client verifier.
+fn rpk_handshake_test(
+    cred: TlsCredential,
+    verifier: impl VerifyCertificate + 'static,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut server_ctx = TlsContextBuilder::new_tls();
+    server_ctx.with_credential(cred)?;
     let server_ctx = server_ctx.build();
 
-    let mut client_ctx = crate::context::TlsContextBuilder::new_tls();
-    client_ctx.with_accepted_peer_cert_types(&[CertificateType::Rpk])?;
+    let mut client_ctx = TlsContextBuilder::new_tls();
+    client_ctx
+        .with_accepted_peer_cert_types(&[CertificateType::Rpk])?
+        .with_certificate_verifier(CertificateVerificationMode::PeerCertMandatory, verifier);
     let client_ctx = client_ctx.build();
 
-    let mut client_conn_builder = client_ctx.new_client_connection(None)?;
-    client_conn_builder.with_certificate_verification_mode(CertificateVerificationMode::None);
-    let mut client_conn = client_conn_builder.build();
-    unsafe {
-        // Safety:
-        // - `client_conn.ptr()` is a valid `SSL` handle.
-        // - `accept_any_verify` is a valid callback.
-        bssl_sys::SSL_set_custom_verify(
-            client_conn.ptr(),
-            bssl_sys::SSL_VERIFY_PEER as _,
-            Some(accept_any_verify),
-        );
-    }
-    let mut server_conn = server_ctx.new_server_connection(None)?.build();
+    let mut client_conn = client_ctx.new_client_connection().build();
+    let mut server_conn = server_ctx.new_server_connection().build();
 
     let (sock_client, sock_server, mut executor) = create_mock_pipe();
 
@@ -287,6 +330,61 @@ fn rpk_tls13_handshake() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     );
 
     Ok(())
+}
+
+#[test]
+fn rpk_tls13_handshake() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let priv_key = PrivateKey::from_pem(crate::tests::RSA_SERVER_KEY, || unreachable!()).unwrap();
+
+    let cred = TlsCredentialBuilder::new_raw_public_key(priv_key)
+        .build()
+        .unwrap();
+
+    rpk_handshake_test(cred, AcceptAnyVerifier)
+}
+
+#[test]
+fn rpk_tls13_handshake_with_delegate() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use crate::credentials::{
+        AsyncPrivateKeyDelegate, AsyncPrivateKeyDelegateAdapter, SignatureAlgorithm,
+    };
+
+    let priv_key = PrivateKey::from_pem(P256_SERVER_KEY, || unreachable!()).unwrap();
+    let pub_key = priv_key.to_public_key().clone();
+    let expected_spki_der = pub_key.to_der();
+
+    struct P256KeyDelegate {
+        key_der: &'static [u8],
+    }
+
+    impl AsyncPrivateKeyDelegate for P256KeyDelegate {
+        type SignOp = Ready<Option<Vec<u8>>>;
+        type DecryptOp = Ready<Option<Vec<u8>>>;
+
+        fn sign(&self, message: &[u8], algorithm: SignatureAlgorithm) -> Self::SignOp {
+            assert!(matches!(
+                algorithm,
+                SignatureAlgorithm::EcdsaSecp256r1Sha256
+            ));
+            let Some(ParsedPrivateKey::P256(key)) = ParsedPrivateKey::from_der(self.key_der) else {
+                panic!("failed to parse P256 key")
+            };
+            ready(Some(key.sign(message)))
+        }
+
+        fn decrypt(&self, _ciphertext: &[u8]) -> Self::DecryptOp {
+            unreachable!()
+        }
+    }
+
+    let delegate = AsyncPrivateKeyDelegateAdapter(P256KeyDelegate {
+        key_der: P256_SERVER_KEY_DER,
+    });
+    let cred = TlsCredentialBuilder::new_raw_public_key_with_delegate(pub_key, delegate)
+        .build()
+        .unwrap();
+
+    rpk_handshake_test(cred, RpkVerifier { expected_spki_der })
 }
 
 struct AcceptAnyVerifier;
@@ -389,6 +487,7 @@ fn psk_rpk_fallback_test() -> Result<(), Box<dyn std::error::Error + Send + Sync
                 .is_some();
 
             if offered_rpk {
+                // TODO: switch to `try` block on stabilisation
                 if (|| {
                     client_hello
                         .connection_mut()
@@ -396,7 +495,7 @@ fn psk_rpk_fallback_test() -> Result<(), Box<dyn std::error::Error + Send + Sync
                         .set_certificate_verification_mode(
                             CertificateVerificationMode::PeerCertMandatory,
                         );
-                    Ok::<_, crate::errors::Error>(())
+                    Ok::<_, Error>(())
                 })()
                 .is_err()
                 {
@@ -455,10 +554,10 @@ fn psk_rpk_fallback_test() -> Result<(), Box<dyn std::error::Error + Send + Sync
 
         let (sock_client, sock_server, mut executor) = create_mock_pipe();
 
-        let mut server_conn = server_ctx.new_server_connection(None)?.build();
+        let mut server_conn = server_ctx.new_server_connection().build();
         server_conn.set_io(sock_server)?;
 
-        let mut client_conn_builder = client_ctx.new_client_connection(None)?;
+        let mut client_conn_builder = client_ctx.new_client_connection();
         client_conn_builder
             .with_certificate_verification_mode(CertificateVerificationMode::None)
             .with_certificate_verifier(
@@ -478,7 +577,7 @@ fn psk_rpk_fallback_test() -> Result<(), Box<dyn std::error::Error + Send + Sync
 
             if !offer_psk && !offer_rpk {
                 assert!(handshake_result.is_err(), "Handshake should have failed");
-                return Ok::<(), crate::errors::Error>(());
+                return Ok::<(), Error>(());
             }
 
             handshake_result?;
@@ -486,18 +585,20 @@ fn psk_rpk_fallback_test() -> Result<(), Box<dyn std::error::Error + Send + Sync
             client_conn.as_pin_mut().async_write(b"hello").await?;
 
             let mut server_buf = [0u8; 5];
-            let read_len = server_conn.as_pin_mut().async_read(&mut server_buf).await?;
+            let mut recv_buf = ReceiveBuffer::new(&mut server_buf);
+            let read_len = server_conn.as_pin_mut().async_read(&mut recv_buf).await?;
             assert!(matches!(read_len, IoStatus::Ok(5)));
             assert_eq!(&server_buf, b"hello");
 
             server_conn.as_pin_mut().async_write(b"world").await?;
 
             let mut client_buf = [0u8; 5];
-            let read_len = client_conn.as_pin_mut().async_read(&mut client_buf).await?;
+            let mut recv_buf = ReceiveBuffer::new(&mut client_buf);
+            let read_len = client_conn.as_pin_mut().async_read(&mut recv_buf).await?;
             assert!(matches!(read_len, IoStatus::Ok(5)));
             assert_eq!(&client_buf, b"world");
 
-            Ok::<(), crate::errors::Error>(())
+            Ok::<(), Error>(())
         };
 
         executor.run(test_future)?;
@@ -527,5 +628,230 @@ fn psk_rpk_fallback_test() -> Result<(), Box<dyn std::error::Error + Send + Sync
         }
     }
 
+    Ok(())
+}
+
+#[test]
+fn test_mutual_certificate_selectors() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use crate::credentials::{
+        DistinguishedName,
+        select_cert::{
+            CertificateSelectionResult,
+            ClientCertificateSelectionContext,
+            ClientCertificateSelector,
+            ServerCertificateSelectionContext,
+            ServerCertificateSelector, //
+        },
+    };
+    use std::sync::{
+        Arc,
+        atomic::{
+            AtomicBool,
+            Ordering, //
+        }, //
+    };
+
+    let cred = load_x509_credential();
+
+    struct TestServerSelector {
+        cred: TlsCredential,
+        called: Arc<AtomicBool>,
+    }
+
+    impl ServerCertificateSelector<TlsMode> for TestServerSelector {
+        fn select(
+            &self,
+            mut ctx: ServerCertificateSelectionContext<'_, TlsMode>,
+            _waker: Option<&'_ mut Context<'_>>,
+        ) -> CertificateSelectionResult {
+            self.called.store(true, Ordering::SeqCst);
+            ctx.add_credential(&self.cred).unwrap();
+            CertificateSelectionResult::Success
+        }
+    }
+
+    struct TestClientSelector {
+        cred: TlsCredential,
+        called: Arc<AtomicBool>,
+        ca_dn: &'static [u8],
+    }
+
+    impl ClientCertificateSelector<TlsMode> for TestClientSelector {
+        fn select(
+            &self,
+            mut ctx: ClientCertificateSelectionContext<'_, TlsMode>,
+            _waker: Option<&'_ mut Context<'_>>,
+        ) -> CertificateSelectionResult {
+            self.called.store(true, Ordering::SeqCst);
+            assert!(matches!(
+                ctx.protocol_version(),
+                Some(crate::config::ProtocolVersion::Tls13)
+            ));
+            let _algs = ctx.get_tls13_peer_verification_algorithms();
+            let server_ca_list = ctx.get_server_ca_list();
+            assert!(!server_ca_list.is_empty());
+            assert_eq!(server_ca_list[0].as_ref(), self.ca_dn);
+
+            ctx.add_credential(&self.cred).unwrap();
+            CertificateSelectionResult::Success
+        }
+    }
+
+    let server_called = Arc::new(AtomicBool::new(false));
+    let server_selector = TestServerSelector {
+        cred: cred.clone(),
+        called: server_called.clone(),
+    };
+
+    let client_called = Arc::new(AtomicBool::new(false));
+    let client_selector = TestClientSelector {
+        cred: cred.clone(),
+        called: client_called.clone(),
+        ca_dn: TEST_CA_DN,
+    };
+
+    let mut server_ctx_builder = TlsContextBuilder::new_tls();
+    let server_cert_store = load_trust_store(Trust::SslClient);
+    server_ctx_builder
+        .with_server_side_certificate_callback(server_selector)
+        .with_certificate_store(&server_cert_store)
+        .set_ca_names(vec![DistinguishedName::from_bytes(TEST_CA_DN, None)?]);
+    let server_ctx = server_ctx_builder.build();
+
+    let mut client_ctx_builder = TlsContextBuilder::new_tls();
+    let client_cert_store = load_trust_store(Trust::SslServer);
+    client_ctx_builder
+        .with_client_side_certificate_callback(client_selector)
+        .with_certificate_store(&client_cert_store)
+        .set_ca_names(vec![DistinguishedName::from_bytes(TEST_CA_DN, None)?]);
+    let client_ctx = client_ctx_builder.build();
+
+    let mut server_conn = server_ctx.new_server_connection();
+    server_conn.with_certificate_verification_mode(CertificateVerificationMode::PeerCertMandatory);
+    let server_conn = server_conn.build();
+    let mut client_conn = client_ctx.new_client_connection();
+    client_conn.with_certificate_verification_mode(CertificateVerificationMode::PeerCertMandatory);
+    let mut client_conn = client_conn.build();
+
+    client_conn
+        .in_handshake()
+        .unwrap()
+        .set_host("www.google.com")?;
+
+    run_async_handshake(client_conn, server_conn)?;
+    assert!(server_called.load(Ordering::SeqCst));
+    assert!(client_called.load(Ordering::SeqCst));
+    Ok(())
+}
+
+#[test]
+fn test_mutual_certificate_selectors_connection()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use crate::credentials::{
+        DistinguishedName,
+        select_cert::{
+            CertificateSelectionResult, ClientCertificateSelectionContext,
+            ClientCertificateSelector, ServerCertificateSelectionContext,
+            ServerCertificateSelector,
+        },
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let cred = load_x509_credential();
+
+    struct TestServerSelector {
+        cred: TlsCredential,
+        called: Arc<AtomicBool>,
+    }
+
+    impl ServerCertificateSelector<TlsMode> for TestServerSelector {
+        fn select(
+            &self,
+            mut ctx: ServerCertificateSelectionContext<'_, TlsMode>,
+            _waker: Option<&'_ mut Context<'_>>,
+        ) -> CertificateSelectionResult {
+            self.called.store(true, Ordering::SeqCst);
+            ctx.add_credential(&self.cred).unwrap();
+            CertificateSelectionResult::Success
+        }
+    }
+
+    struct TestClientSelector {
+        cred: TlsCredential,
+        called: Arc<AtomicBool>,
+        ca_dn: &'static [u8],
+    }
+
+    impl ClientCertificateSelector<TlsMode> for TestClientSelector {
+        fn select(
+            &self,
+            mut ctx: ClientCertificateSelectionContext<'_, TlsMode>,
+            _waker: Option<&'_ mut Context<'_>>,
+        ) -> CertificateSelectionResult {
+            self.called.store(true, Ordering::SeqCst);
+            assert!(matches!(
+                ctx.protocol_version(),
+                Some(crate::config::ProtocolVersion::Tls13)
+            ));
+            let _algs = ctx.get_tls13_peer_verification_algorithms();
+            let server_ca_list = ctx.get_server_ca_list();
+            assert!(!server_ca_list.is_empty());
+            assert_eq!(server_ca_list[0].as_ref(), self.ca_dn);
+
+            ctx.add_credential(&self.cred).unwrap();
+            CertificateSelectionResult::Success
+        }
+    }
+
+    let server_called = Arc::new(AtomicBool::new(false));
+    let server_selector = TestServerSelector {
+        cred: cred.clone(),
+        called: server_called.clone(),
+    };
+
+    let client_called = Arc::new(AtomicBool::new(false));
+    let client_selector = TestClientSelector {
+        cred: cred.clone(),
+        called: client_called.clone(),
+        ca_dn: TEST_CA_DN,
+    };
+
+    let mut server_ctx_builder = TlsContextBuilder::new_tls();
+    let server_cert_store = load_trust_store(Trust::SslClient);
+    server_ctx_builder
+        .with_certificate_store(&server_cert_store)
+        .set_ca_names(vec![DistinguishedName::from_bytes(TEST_CA_DN, None)?]);
+    let server_ctx = server_ctx_builder.build();
+
+    let mut client_ctx_builder = TlsContextBuilder::new_tls();
+    let client_cert_store = load_trust_store(Trust::SslServer);
+    client_ctx_builder
+        .with_certificate_store(&client_cert_store)
+        .set_ca_names(vec![DistinguishedName::from_bytes(TEST_CA_DN, None)?]);
+    let client_ctx = client_ctx_builder.build();
+
+    let mut server_conn_builder = server_ctx.new_server_connection();
+    server_conn_builder
+        .with_certificate_verification_mode(CertificateVerificationMode::PeerCertMandatory)
+        .with_server_side_certificate_callback(server_selector);
+    let server_conn = server_conn_builder.build();
+
+    let mut client_conn_builder = client_ctx.new_client_connection();
+    client_conn_builder
+        .with_certificate_verification_mode(CertificateVerificationMode::PeerCertMandatory)
+        .with_client_side_certificate_callback(client_selector);
+    let mut client_conn = client_conn_builder.build();
+
+    client_conn
+        .in_handshake()
+        .unwrap()
+        .set_host("www.google.com")?;
+
+    run_async_handshake(client_conn, server_conn)?;
+    assert!(server_called.load(Ordering::SeqCst));
+    assert!(client_called.load(Ordering::SeqCst));
     Ok(())
 }

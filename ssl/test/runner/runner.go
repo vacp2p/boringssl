@@ -47,6 +47,7 @@ import (
 	"boringssl.googlesource.com/boringssl.git/util/testresult"
 	"filippo.io/mldsa"
 	"golang.org/x/crypto/cryptobyte"
+	"golang.org/x/term"
 )
 
 var (
@@ -59,7 +60,7 @@ var (
 	mallocTest         = flag.Int64("malloc-test", -1, "If non-negative, run each test with each malloc in turn failing from the given number onwards.")
 	mallocTestDebug    = flag.Bool("malloc-test-debug", false, "If true, ask bssl_shim to abort rather than fail a malloc. This can be used with a specific value for --malloc-test to identity the malloc failing that is causing problems.")
 	jsonOutput         = flag.String("json-output", "", "The file to output JSON results to.")
-	pipe               = flag.Bool("pipe", false, "If true, print status output suitable for piping into another program.")
+	pipe               = flag.Bool("pipe", !term.IsTerminal(int(os.Stdout.Fd())), "If true, print status output suitable for piping into another program.")
 	testToRun          = flag.String("test", "", "Semicolon-separated patterns of tests to run, or empty to run all tests")
 	skipTest           = flag.String("skip", "", "Semicolon-separated patterns of tests to skip")
 	allowHintMismatch  = flag.String("allow-hint-mismatch", "", "Semicolon-separated patterns of tests where hints may mismatch")
@@ -686,9 +687,6 @@ type testCase struct {
 	// should retry for early rejection. In a server test, this is whether the
 	// test expects the shim to reject early data.
 	expectEarlyDataRejected bool
-	// skipSplitHandshake, if true, will skip the generation of a split
-	// handshake copy of the test.
-	skipSplitHandshake bool
 	// skipHints, if true, will skip the generation of a handshake hints copy of
 	// the test.
 	skipHints bool
@@ -1629,12 +1627,12 @@ func runTest(dispatcher *shimDispatcher, statusChan chan statusMsg, test *testCa
 	}()
 
 	// Make a copy of the testCase before modifying it in-place.
-	test = ptrTo(*test)
+	test = new(*test)
 	if test.resumeConfig != nil {
-		test.resumeConfig = ptrTo(*test.resumeConfig)
+		test.resumeConfig = new(*test.resumeConfig)
 	}
 	if test.resumeExpectations != nil {
-		test.resumeExpectations = ptrTo(*test.resumeExpectations)
+		test.resumeExpectations = new(*test.resumeExpectations)
 	}
 
 	var flags []string
@@ -2068,7 +2066,7 @@ func allVersions(protocol protocol) []tlsVersion {
 	return ret
 }
 
-func convertToSplitHandshakeTests(tests []testCase) (splitHandshakeTests []testCase, err error) {
+func convertToHandshakeHintTests(tests []testCase) (handshakeHintTests []testCase, err error) {
 	var stdout bytes.Buffer
 	var flags []string
 	if len(*shimExtraFlags) > 0 {
@@ -2081,7 +2079,7 @@ func convertToSplitHandshakeTests(tests []testCase) (splitHandshakeTests []testC
 		return nil, err
 	}
 
-	switch strings.TrimSpace(string(stdout.Bytes())) {
+	switch strings.TrimSpace(stdout.String()) {
 	case "No":
 		return
 	case "Yes":
@@ -2093,32 +2091,6 @@ func convertToSplitHandshakeTests(tests []testCase) (splitHandshakeTests []testC
 	var allowHintMismatchPattern []string
 	if len(*allowHintMismatch) > 0 {
 		allowHintMismatchPattern = strings.Split(*allowHintMismatch, ";")
-	}
-
-NextTest:
-	for _, test := range tests {
-		if test.protocol != tls ||
-			test.testType != serverTest ||
-			len(test.shimCredentials) != 0 ||
-			len(test.resumeShimCredentials) != 0 ||
-			strings.Contains(test.name, "ECH-Server") ||
-			test.skipSplitHandshake {
-			continue
-		}
-
-		for _, flag := range test.flags {
-			if flag == "-implicit-handshake" {
-				continue NextTest
-			}
-		}
-
-		shTest := test
-		shTest.name += "-Split"
-		shTest.flags = make([]string, len(test.flags), len(test.flags)+3)
-		copy(shTest.flags, test.flags)
-		shTest.flags = append(shTest.flags, "-handoff", "-handshaker-path", *handshakerPath)
-
-		splitHandshakeTests = append(splitHandshakeTests, shTest)
 	}
 
 	for _, test := range tests {
@@ -2136,19 +2108,19 @@ NextTest:
 			}
 		}
 
-		shTest := test
-		shTest.name += "-Hints"
-		shTest.flags = make([]string, len(test.flags), len(test.flags)+3)
-		copy(shTest.flags, test.flags)
-		shTest.flags = append(shTest.flags, "-handshake-hints", "-handshaker-path", *handshakerPath)
+		hintTest := test
+		hintTest.name += "-Hints"
+		hintTest.flags = make([]string, len(test.flags), len(test.flags)+3)
+		copy(hintTest.flags, test.flags)
+		hintTest.flags = append(hintTest.flags, "-handshake-hints", "-handshaker-path", *handshakerPath)
 		if matched {
-			shTest.flags = append(shTest.flags, "-allow-hint-mismatch")
+			hintTest.flags = append(hintTest.flags, "-allow-hint-mismatch")
 		}
 
-		splitHandshakeTests = append(splitHandshakeTests, shTest)
+		handshakeHintTests = append(handshakeHintTests, hintTest)
 	}
 
-	return splitHandshakeTests, nil
+	return handshakeHintTests, nil
 }
 
 func worker(dispatcher *shimDispatcher, statusChan chan statusMsg, c chan *testCase, shimPath string, wg *sync.WaitGroup) {
@@ -2404,9 +2376,9 @@ func main() {
 	addRawPublicKeyTests()
 	addServerPaddingTests()
 
-	toAppend, err := convertToSplitHandshakeTests(testCases)
+	toAppend, err := convertToHandshakeHintTests(testCases)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error making split handshake tests: %s", err)
+		fmt.Fprintf(os.Stderr, "Error making handshake hint tests: %s", err)
 		os.Exit(1)
 	}
 	testCases = append(testCases, toAppend...)

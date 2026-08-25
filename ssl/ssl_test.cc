@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -43,6 +44,7 @@
 #include <openssl/pem.h>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
+#include <openssl/span.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 
@@ -488,27 +490,10 @@ static const char *kMustNotIncludeDeprecated[] = {
     "SHA1", "RSA",     "SSLv3", "TLSv1", "TLSv1.2",
 };
 
-static const struct {
-  const char *rule;
-  int expected_included_deprecated_count;
-} kDeprecatedCBCSHA256Rules[] = {
-    {"TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256", 1},
-    {"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256", 1},
-    {"ALL:TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256", 1},
-    {"ALL:TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256", 1},
-    {"ALL:TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:TLS_ECDHE_RSA_WITH_AES_128_"
-     "CBC_SHA256",
-     2},
-};
-
 static const CurveTest kCurveTests[] = {
     {
         "P-256",
         {SSL_GROUP_SECP256R1},
-    },
-    {
-        "P-256:X25519Kyber768Draft00",
-        {SSL_GROUP_SECP256R1, SSL_GROUP_X25519_KYBER768_DRAFT00},
     },
     {
         "P-256:X25519MLKEM768",
@@ -612,6 +597,7 @@ TEST(SSLTest, CipherRules) {
     // Test strict mode.
     if (t.strict_fail) {
       EXPECT_FALSE(SSL_CTX_set_strict_cipher_list(ctx.get(), t.rule));
+      EXPECT_TRUE(ErrorsAreAndClear({{ERR_LIB_SSL, SSL_R_INVALID_COMMAND}}));
     } else {
       ASSERT_TRUE(SSL_CTX_set_strict_cipher_list(ctx.get(), t.rule));
       EXPECT_TRUE(CipherListsEqual(ctx.get(), t.expected))
@@ -637,12 +623,27 @@ TEST(SSLTest, CipherRules) {
     ASSERT_TRUE(SSL_CTX_set_strict_cipher_list(ctx.get(), rule));
     for (const SSL_CIPHER *cipher : SSL_CTX_get_ciphers(ctx.get())) {
       EXPECT_NE(NID_undef, SSL_CIPHER_get_cipher_nid(cipher));
+#if !defined(BORINGSSL_SHARED_LIBRARY)
       EXPECT_FALSE(ssl_cipher_is_deprecated(cipher));
+#endif
     }
   }
 }
 
+#if !defined(BORINGSSL_SHARED_LIBRARY)
 TEST(SSLTest, CipherRulesDeprecated) {
+  static const struct {
+    const char *rule;
+    int expected_included_deprecated_count;
+  } kDeprecatedCBCSHA256Rules[] = {
+      {"TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256", 1},
+      {"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256", 1},
+      {"ALL:TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256", 1},
+      {"ALL:TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256", 1},
+      {"ALL:TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:"
+       "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+       2},
+  };
   for (const auto &test : kDeprecatedCBCSHA256Rules) {
     SCOPED_TRACE(test.rule);
     bssl::UniquePtr<SSL_CTX> ctx(SSL_CTX_new(TLS_method()));
@@ -658,6 +659,7 @@ TEST(SSLTest, CipherRulesDeprecated) {
     EXPECT_EQ(found, test.expected_included_deprecated_count);
   }
 }
+#endif  // BORINGSSL_SHARED_LIBRARY
 
 TEST(SSLTest, CurveRules) {
   for (const CurveTest &t : kCurveTests) {
@@ -922,7 +924,7 @@ TEST(SSLTest, ServerSupportedGroupsHint) {
       },
       {
           "Hint one group, not supported by client",
-          {SSL_GROUP_X25519_KYBER768_DRAFT00},
+          {SSL_GROUP_SECP384R1},
           kDefaultKeyShares,
       },
       {
@@ -1603,33 +1605,6 @@ TEST(SSLTest, CipherProperties) {
   }
 }
 
-// CreateSessionWithTicket returns a sample `SSL_SESSION` with the specified
-// version and ticket length or nullptr on failure.
-static bssl::UniquePtr<SSL_SESSION> CreateSessionWithTicket(uint16_t version,
-                                                            size_t ticket_len) {
-  std::vector<uint8_t> der;
-  if (!DecodeBase64(&der, kOpenSSLSession)) {
-    return nullptr;
-  }
-
-  bssl::UniquePtr<SSL_CTX> ssl_ctx(SSL_CTX_new(TLS_method()));
-  if (!ssl_ctx) {
-    return nullptr;
-  }
-  // Use a garbage ticket.
-  std::vector<uint8_t> ticket(ticket_len, 'a');
-  bssl::UniquePtr<SSL_SESSION> session(
-      SSL_SESSION_from_bytes(der.data(), der.size(), ssl_ctx.get()));
-  if (!session ||                                                   //
-      !SSL_SESSION_set_protocol_version(session.get(), version) ||  //
-      !SSL_SESSION_set_ticket(session.get(), ticket.data(), ticket.size())) {
-    return nullptr;
-  }
-  // Fix up the timeout.
-  SSL_SESSION_set_time(session.get(), time(nullptr));
-  return session;
-}
-
 static bool GetClientHello(SSL *ssl, std::vector<uint8_t> *out) {
   bssl::UniquePtr<BIO> bio(BIO_new(BIO_s_mem()));
   if (!bio) {
@@ -1658,105 +1633,6 @@ static bool GetClientHello(SSL *ssl, std::vector<uint8_t> *out) {
 
   *out = std::vector<uint8_t>(client_hello, client_hello + client_hello_len);
   return true;
-}
-
-// GetClientHelloLen creates a client SSL connection with the specified version
-// and ticket length. It returns the length of the ClientHello, not including
-// the record header, on success and zero on error.
-static size_t GetClientHelloLen(uint16_t max_version, uint16_t session_version,
-                                size_t ticket_len) {
-  bssl::UniquePtr<SSL_CTX> ctx(SSL_CTX_new(TLS_method()));
-
-  // Reduce the number of supported groups, as we need ClientHellos smaller
-  // than 254 bytes for SSLTest.Padding.
-  uint16_t groups[] = {SSL_GROUP_X25519, SSL_GROUP_SECP256R1,
-                       SSL_GROUP_SECP384R1};
-  SSL_CTX_set1_group_ids(ctx.get(), groups, sizeof(groups) / sizeof(*groups));
-
-  bssl::UniquePtr<SSL_SESSION> session =
-      CreateSessionWithTicket(session_version, ticket_len);
-  if (!ctx || !session) {
-    return 0;
-  }
-
-  // Set a one-element cipher list so the baseline ClientHello is unpadded.
-  bssl::UniquePtr<SSL> ssl(SSL_new(ctx.get()));
-  if (!ssl || !SSL_set_session(ssl.get(), session.get()) ||
-      !SSL_set_strict_cipher_list(ssl.get(), "ECDHE-RSA-AES128-GCM-SHA256") ||
-      !SSL_set_max_proto_version(ssl.get(), max_version)) {
-    return 0;
-  }
-
-  std::vector<uint8_t> client_hello;
-  if (!GetClientHello(ssl.get(), &client_hello) ||
-      client_hello.size() <= SSL3_RT_HEADER_LENGTH) {
-    return 0;
-  }
-
-  return client_hello.size() - SSL3_RT_HEADER_LENGTH;
-}
-
-TEST(SSLTest, Padding) {
-  struct PaddingVersions {
-    uint16_t max_version, session_version;
-  };
-  static const PaddingVersions kPaddingVersions[] = {
-      // Test the padding extension at TLS 1.2.
-      {TLS1_2_VERSION, TLS1_2_VERSION},
-      // Test the padding extension at TLS 1.3 with a TLS 1.2 session, so there
-      // will be no PSK binder after the padding extension.
-      {TLS1_3_VERSION, TLS1_2_VERSION},
-      // Test the padding extension at TLS 1.3 with a TLS 1.3 session, so there
-      // will be a PSK binder after the padding extension.
-      {TLS1_3_VERSION, TLS1_3_VERSION},
-
-  };
-
-  struct PaddingTest {
-    size_t input_len, padded_len;
-  };
-  static const PaddingTest kPaddingTests[] = {
-      // ClientHellos of length below 0x100 do not require padding.
-      {0xfe, 0xfe},
-      {0xff, 0xff},
-      // ClientHellos of length 0x100 through 0x1fb are padded up to 0x200.
-      {0x100, 0x200},
-      {0x123, 0x200},
-      {0x1fb, 0x200},
-      // ClientHellos of length 0x1fc through 0x1ff get padded beyond 0x200. The
-      // padding extension takes a minimum of four bytes plus one required
-      // content
-      // byte. (To work around yet more server bugs, we avoid empty final
-      // extensions.)
-      {0x1fc, 0x201},
-      {0x1fd, 0x202},
-      {0x1fe, 0x203},
-      {0x1ff, 0x204},
-      // Finally, larger ClientHellos need no padding.
-      {0x200, 0x200},
-      {0x201, 0x201},
-  };
-
-  for (const PaddingVersions &versions : kPaddingVersions) {
-    SCOPED_TRACE(versions.max_version);
-    SCOPED_TRACE(versions.session_version);
-
-    // Sample a baseline length.
-    size_t base_len =
-        GetClientHelloLen(versions.max_version, versions.session_version, 1);
-    ASSERT_NE(base_len, 0u) << "Baseline length could not be sampled";
-
-    for (const PaddingTest &test : kPaddingTests) {
-      SCOPED_TRACE(test.input_len);
-      ASSERT_LE(base_len, test.input_len) << "Baseline ClientHello too long";
-
-      size_t padded_len =
-          GetClientHelloLen(versions.max_version, versions.session_version,
-                            1 + test.input_len - base_len);
-      EXPECT_EQ(padded_len, test.padded_len)
-          << "ClientHello was not padded to expected length";
-    }
-  }
 }
 
 static bssl::UniquePtr<X509> CertFromPEM(const char *pem) {
@@ -2706,6 +2582,8 @@ TEST(SSLTest, UnsupportedECHConfig) {
   EXPECT_FALSE(SSL_ECH_KEYS_add(keys.get(), /*is_retry_config=*/1,
                                 ech_config.data(), ech_config.size(),
                                 key.get()));
+  EXPECT_TRUE(
+      ErrorsAreAndClear({{ERR_LIB_SSL, SSL_R_UNSUPPORTED_ECH_SERVER_CONFIG}}));
 
   // Invalid public names are rejected.
   ECHConfigParams invalid_public_name;
@@ -3086,9 +2964,11 @@ TEST(SSLTest, TLS13ExporterAvailability) {
   EXPECT_FALSE(SSL_export_keying_material(client.get(), buffer.data(),
                                           buffer.size(), label, strlen(label),
                                           nullptr, 0, 0));
+  EXPECT_TRUE(ErrorsAreAndClear({{ERR_LIB_SSL, SSL_R_HANDSHAKE_NOT_COMPLETE}}));
   EXPECT_FALSE(SSL_export_keying_material(server.get(), buffer.data(),
                                           buffer.size(), label, strlen(label),
                                           nullptr, 0, 0));
+  EXPECT_TRUE(ErrorsAreAndClear({{ERR_LIB_SSL, SSL_R_HANDSHAKE_NOT_COMPLETE}}));
 
   // Send the client's first flight of handshake messages.
   int client_ret = SSL_do_handshake(client.get());
@@ -5510,17 +5390,24 @@ TEST(SSLTest, CertThenKeyMismatch) {
 
   // There is no key or certificate, so `SSL_CTX_check_private_key` fails.
   EXPECT_FALSE(SSL_CTX_check_private_key(ctx.get()));
+  EXPECT_TRUE(
+      ErrorsAreAndClear({{ERR_LIB_SSL, SSL_R_NO_PRIVATE_KEY_ASSIGNED}}));
 
   // With only a certificate, `SSL_CTX_check_private_key` still fails.
   ASSERT_TRUE(SSL_CTX_use_certificate(ctx.get(), leaf.get()));
   EXPECT_FALSE(SSL_CTX_check_private_key(ctx.get()));
+  EXPECT_TRUE(
+      ErrorsAreAndClear({{ERR_LIB_SSL, SSL_R_NO_PRIVATE_KEY_ASSIGNED}}));
 
   // The private key does not match the certificate, so it should fail.
   EXPECT_FALSE(SSL_CTX_use_PrivateKey(ctx.get(), key.get()));
+  EXPECT_TRUE(ErrorsAreAndClear({{ERR_LIB_X509, X509_R_KEY_VALUES_MISMATCH}}));
 
   // Checking the private key fails, but this is really because there is still
   // no private key.
   EXPECT_FALSE(SSL_CTX_check_private_key(ctx.get()));
+  EXPECT_TRUE(
+      ErrorsAreAndClear({{ERR_LIB_SSL, SSL_R_NO_PRIVATE_KEY_ASSIGNED}}));
   EXPECT_EQ(nullptr, SSL_CTX_get0_privatekey(ctx.get()));
 }
 
@@ -5535,10 +5422,14 @@ TEST(SSLTest, KeyThenCertMismatch) {
 
   // There is no key or certificate, so `SSL_CTX_check_private_key` fails.
   EXPECT_FALSE(SSL_CTX_check_private_key(ctx.get()));
+  EXPECT_TRUE(
+      ErrorsAreAndClear({{ERR_LIB_SSL, SSL_R_NO_PRIVATE_KEY_ASSIGNED}}));
 
   // With only a key, `SSL_CTX_check_private_key` still fails.
   ASSERT_TRUE(SSL_CTX_use_PrivateKey(ctx.get(), key.get()));
   EXPECT_FALSE(SSL_CTX_check_private_key(ctx.get()));
+  EXPECT_TRUE(
+      ErrorsAreAndClear({{ERR_LIB_SSL, SSL_R_NO_CERTIFICATE_ASSIGNED}}));
 
   // If configuring a certificate that doesn't match the key, configuration
   // actually succeeds. We just silently drop the private key.
@@ -5550,6 +5441,8 @@ TEST(SSLTest, KeyThenCertMismatch) {
   // by way of noticing there is no private key. The actual consistency check
   // happened in `SSL_CTX_use_certificate`.
   EXPECT_FALSE(SSL_CTX_check_private_key(ctx.get()));
+  EXPECT_TRUE(
+      ErrorsAreAndClear({{ERR_LIB_SSL, SSL_R_NO_PRIVATE_KEY_ASSIGNED}}));
 }
 
 TEST(SSLTest, OverrideCertAndKey) {
@@ -9471,6 +9364,8 @@ TEST(SSLTest, ProcessTLS13NewSessionTicket) {
   // Servers cannot call `SSL_process_tls13_new_session_ticket`.
   ASSERT_FALSE(SSL_process_tls13_new_session_ticket(server.get(), kTicket,
                                                     sizeof(kTicket)));
+  EXPECT_TRUE(
+      ErrorsAreAndClear({{ERR_LIB_SSL, ERR_R_SHOULD_NOT_HAVE_BEEN_CALLED}}));
 
   // Clients cannot call `SSL_process_tls13_new_session_ticket` before the
   // handshake completes.
@@ -9479,6 +9374,8 @@ TEST(SSLTest, ProcessTLS13NewSessionTicket) {
   SSL_set_connect_state(client2.get());
   ASSERT_FALSE(SSL_process_tls13_new_session_ticket(client2.get(), kTicket,
                                                     sizeof(kTicket)));
+  EXPECT_TRUE(
+      ErrorsAreAndClear({{ERR_LIB_SSL, ERR_R_SHOULD_NOT_HAVE_BEEN_CALLED}}));
 }
 
 TEST(SSLTest, BIO) {
@@ -9583,6 +9480,90 @@ TEST(SSLTest, ALPNConfig) {
   // Empty lists are valid and are interpreted as disabling ALPN.
   EXPECT_EQ(0, SSL_CTX_set_alpn_protos(ctx.get(), nullptr, 0));
   check_alpn_proto({});
+}
+
+TEST(SSLTest, DeclarativeServerALPN) {
+  bssl::UniquePtr<SSL_CTX> client_ctx(SSL_CTX_new(TLS_method()));
+  bssl::UniquePtr<SSL_CTX> server_ctx(SSL_CTX_new(TLS_method()));
+  ASSERT_TRUE(client_ctx);
+  ASSERT_TRUE(server_ctx);
+  bssl::UniquePtr<X509> cert = GetTestCertificate();
+  bssl::UniquePtr<EVP_PKEY> key = GetTestKey();
+  ASSERT_TRUE(cert);
+  ASSERT_TRUE(key);
+  ASSERT_TRUE(SSL_CTX_use_certificate(server_ctx.get(), cert.get()));
+  ASSERT_TRUE(SSL_CTX_use_PrivateKey(server_ctx.get(), key.get()));
+  SSL_CTX_set_custom_verify(client_ctx.get(), SSL_VERIFY_PEER,
+                            AcceptAnyCertificate);
+
+  // Helper to run connection and check negotiated ALPN.
+  auto check_negotiation =
+      [&](bssl::Span<const uint8_t> client_protos,
+          bssl::Span<const uint8_t> server_protos,
+          std::optional<bssl::Span<const uint8_t>> expected_alpn) {
+        ASSERT_EQ(
+            0, SSL_CTX_set_alpn_protos(client_ctx.get(), client_protos.data(),
+                                       client_protos.size()));
+        ASSERT_EQ(
+            0, SSL_CTX_set_alpn_protos(server_ctx.get(), server_protos.data(),
+                                       server_protos.size()));
+
+        bssl::UniquePtr<SSL> client, server;
+        bool success = ConnectClientAndServer(
+            &client, &server, client_ctx.get(), server_ctx.get());
+        if (!expected_alpn.has_value()) {
+          EXPECT_FALSE(success);
+          return;
+        }
+
+        ASSERT_TRUE(success);
+        const uint8_t *alpn = nullptr;
+        unsigned alpn_len = 0;
+        SSL_get0_alpn_selected(client.get(), &alpn, &alpn_len);
+        EXPECT_EQ(Bytes(*expected_alpn), Bytes(alpn, alpn_len));
+        SSL_get0_alpn_selected(server.get(), &alpn, &alpn_len);
+        EXPECT_EQ(Bytes(*expected_alpn), Bytes(alpn, alpn_len));
+      };
+  const auto kBar = bssl::StringAsBytes("bar");
+  const auto kH2 = bssl::StringAsBytes("h2");
+
+  // 1. Basic match: Client ["foo", "bar"], Server ["bar", "baz"] ->
+  // negotiates "bar"
+  const uint8_t kClient1[] = {3, 'f', 'o', 'o', 3, 'b', 'a', 'r'};
+  const uint8_t kServer1[] = {3, 'b', 'a', 'r', 3, 'b', 'a', 'z'};
+  check_negotiation(kClient1, kServer1, kBar);
+
+  // 2. Client preference: Client ["bar", "foo"], Server ["foo", "bar"] ->
+  // negotiates "bar"
+  const uint8_t kClient2[] = {3, 'b', 'a', 'r', 3, 'f', 'o', 'o'};
+  const uint8_t kServer2[] = {3, 'f', 'o', 'o', 3, 'b', 'a', 'r'};
+  check_negotiation(kClient2, kServer2, kBar);
+
+  // 3. No overlap -> Handshake fails
+  const uint8_t kClient3[] = {3, 'f', 'o', 'o'};
+  const uint8_t kServer3[] = {3, 'b', 'a', 'r'};
+  check_negotiation(kClient3, kServer3, std::nullopt);
+
+  // 4. HTTP/2 example.
+  SSL_CTX_set_min_proto_version(client_ctx.get(), TLS1_2_VERSION);
+  SSL_CTX_set_max_proto_version(client_ctx.get(), TLS1_2_VERSION);
+  SSL_CTX_set_min_proto_version(server_ctx.get(), TLS1_2_VERSION);
+  SSL_CTX_set_max_proto_version(server_ctx.get(), TLS1_2_VERSION);
+
+  const uint8_t kClientH2[] = {2,   'h', '2', 8,   'h', 't',
+                               't', 'p', '/', '1', '.', '1'};
+  const uint8_t kServerH2[] = {2, 'h', '2'};
+
+  ASSERT_TRUE(
+      SSL_CTX_set_cipher_list(client_ctx.get(), "ECDHE-RSA-AES128-SHA256"));
+  ASSERT_TRUE(
+      SSL_CTX_set_cipher_list(server_ctx.get(), "ECDHE-RSA-AES128-SHA256"));
+
+  // Yes, this is a violation of RFC 7540, Section 9.2.
+  // However, we made a conscious decision to negotiate "h2" anyway.
+  // Users should install their own ALPN callback to enforce the cipher suite
+  // restrictions.
+  check_negotiation(kClientH2, kServerH2, kH2);
 }
 
 TEST(SSLTest, AcceptedPeerCertTypesConfig) {
@@ -11056,16 +11037,22 @@ TEST_P(SSLVersionTest, GetTrafficSecrets) {
   Span<const uint8_t> client_read, client_write, server_read, server_write;
   bool client_ok =
       SSL_get_traffic_secrets(client_.get(), &client_read, &client_write);
-  bool server_ok =
-      SSL_get_traffic_secrets(server_.get(), &server_read, &server_write);
   if (!is_dtls() && version() >= TLS1_3_VERSION) {
+    bool server_ok =
+        SSL_get_traffic_secrets(server_.get(), &server_read, &server_write);
     ASSERT_TRUE(client_ok);
     ASSERT_TRUE(server_ok);
     EXPECT_EQ(Bytes(client_read), Bytes(server_write));
     EXPECT_EQ(Bytes(server_read), Bytes(client_write));
   } else {
     EXPECT_FALSE(client_ok);
+    int expected_reason =
+        is_dtls() ? ERR_R_SHOULD_NOT_HAVE_BEEN_CALLED : SSL_R_WRONG_SSL_VERSION;
+    EXPECT_TRUE(ErrorsAreAndClear({{ERR_LIB_SSL, expected_reason}}));
+    bool server_ok =
+        SSL_get_traffic_secrets(server_.get(), &server_read, &server_write);
     EXPECT_FALSE(server_ok);
+    EXPECT_TRUE(ErrorsAreAndClear({{ERR_LIB_SSL, expected_reason}}));
   }
 }
 

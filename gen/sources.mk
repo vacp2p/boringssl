@@ -398,7 +398,6 @@ boringssl_crypto_sources := \
   crypto/fuzzer_mode.cc \
   crypto/hpke/hpke.cc \
   crypto/hrss/hrss.cc \
-  crypto/kyber/kyber.cc \
   crypto/lhash/lhash.cc \
   crypto/md4/md4.cc \
   crypto/md5/md5.cc \
@@ -498,6 +497,7 @@ boringssl_crypto_sources := \
   crypto/x509/x509_def.cc \
   crypto/x509/x509_ext.cc \
   crypto/x509/x509_lu.cc \
+  crypto/x509/x509_mtc.cc \
   crypto/x509/x509_obj.cc \
   crypto/x509/x509_req.cc \
   crypto/x509/x509_set.cc \
@@ -548,6 +548,7 @@ boringssl_crypto_headers := \
   include/openssl/cmac.h \
   include/openssl/cms.h \
   include/openssl/conf.h \
+  include/openssl/configuration.h \
   include/openssl/cpu.h \
   include/openssl/crypto.h \
   include/openssl/ctrdrbg.h \
@@ -612,6 +613,7 @@ boringssl_crypto_headers := \
   include/openssl/tls_prf.h \
   include/openssl/trust_token.h \
   include/openssl/type_check.h \
+  include/openssl/types.h \
   include/openssl/x509.h \
   include/openssl/x509_vfy.h \
   include/openssl/x509v3.h \
@@ -665,7 +667,6 @@ boringssl_crypto_internal_headers := \
   crypto/fipsmodule/tls/internal.h \
   crypto/hrss/internal.h \
   crypto/internal.h \
-  crypto/kyber/internal.h \
   crypto/lhash/internal.h \
   crypto/md5/internal.h \
   crypto/mem_internal.h \
@@ -781,7 +782,6 @@ boringssl_crypto_test_sources := \
   crypto/hpke/hpke_test.cc \
   crypto/hrss/hrss_test.cc \
   crypto/impl_dispatch_test.cc \
-  crypto/kyber/kyber_test.cc \
   crypto/lhash/lhash_test.cc \
   crypto/md5/md5_test.cc \
   crypto/mem_test.cc \
@@ -890,7 +890,6 @@ boringssl_crypto_test_data := \
   crypto/hmac/hmac_tests.txt \
   crypto/hpke/hpke_test_vectors.txt \
   crypto/hpke/hpke_test_vectors_pq.txt \
-  crypto/kyber/kyber_tests.txt \
   crypto/mldsa/mldsa_nist_keygen_44_tests.txt \
   crypto/mldsa/mldsa_nist_keygen_65_tests.txt \
   crypto/mldsa/mldsa_nist_keygen_87_tests.txt \
@@ -987,6 +986,24 @@ boringssl_crypto_test_data := \
   crypto/x509/test/many_names1.pem \
   crypto/x509/test/many_names2.pem \
   crypto/x509/test/many_names3.pem \
+  crypto/x509/test/mtc/ca_cert.pem \
+  crypto/x509/test/mtc/cert_10_0.pem \
+  crypto/x509/test/mtc/cert_10_1.pem \
+  crypto/x509/test/mtc/cert_2034_0.pem \
+  crypto/x509/test/mtc/cert_2035_0.pem \
+  crypto/x509/test/mtc/cert_2_0.pem \
+  crypto/x509/test/mtc/cert_32_0.pem \
+  crypto/x509/test/mtc/cert_33_0.pem \
+  crypto/x509/test/mtc/cert_33_1.pem \
+  crypto/x509/test/mtc/cert_33_2.pem \
+  crypto/x509/test/mtc/cert_33_3.pem \
+  crypto/x509/test/mtc/cert_33_4.pem \
+  crypto/x509/test/mtc/cert_33_5.pem \
+  crypto/x509/test/mtc/cert_33_6.pem \
+  crypto/x509/test/mtc/cert_33_7.pem \
+  crypto/x509/test/mtc/cert_33_8.pem \
+  crypto/x509/test/mtc/cert_33_9.pem \
+  crypto/x509/test/mtc/cert_5036_0.pem \
   crypto/x509/test/policy_intermediate.pem \
   crypto/x509/test/policy_intermediate_any.pem \
   crypto/x509/test/policy_intermediate_duplicate.pem \
@@ -2303,9 +2320,6 @@ boringssl_pki_test_data := \
   pki/testdata/path_builder_unittest/key_id_prioritization/int_no_ski_c.pem \
   pki/testdata/path_builder_unittest/key_id_prioritization/root.pem \
   pki/testdata/path_builder_unittest/key_id_prioritization/target.pem \
-  pki/testdata/path_builder_unittest/mtc/leaf.pem \
-  pki/testdata/path_builder_unittest/mtc/mtc-ica.pem \
-  pki/testdata/path_builder_unittest/mtc/mtc-leaf.pem \
   pki/testdata/path_builder_unittest/mtc_plants04/leaf.pem \
   pki/testdata/path_builder_unittest/mtc_plants04/mtc-ica.pem \
   pki/testdata/path_builder_unittest/mtc_plants04/mtc-leaf-standalone-3cosigners.pem \
@@ -2879,6 +2893,14 @@ boringssl_rust_bssl_macros_sources := \
 
 boringssl_rust_bssl_sys_sources := \
   rust/bssl-sys/src/lib.rs
+
+boringssl_rust_bssl_tls_tokio_sources := \
+  rust/bssl-tls-tokio/src/hyper.rs \
+  rust/bssl-tls-tokio/src/lib.rs \
+  rust/bssl-tls-tokio/src/tests.rs \
+  rust/bssl-tls-tokio/src/tests/convenience.rs \
+  rust/bssl-tls-tokio/src/tests/datagram.rs \
+  rust/bssl-tls-tokio/src/tests/transport.rs
 
 boringssl_rust_bssl_x509_sources := \
   rust/bssl-x509/src/certificates.rs \

@@ -2618,7 +2618,6 @@ OPENSSL_EXPORT size_t SSL_CTX_get_num_tickets(const SSL_CTX *ctx);
 #define SSL_GROUP_SECP521R1 25
 #define SSL_GROUP_X25519 29
 #define SSL_GROUP_X25519_MLKEM768 0x11ec
-#define SSL_GROUP_X25519_KYBER768_DRAFT00 0x6399
 #define SSL_GROUP_MLKEM1024 0x0202
 
 // SSL_CTX_set1_group_ids sets the preferred groups for `ctx` to `group_ids`.
@@ -3425,7 +3424,13 @@ OPENSSL_EXPORT SSL_CTX *SSL_set_SSL_CTX(SSL *ssl, SSL_CTX *ctx);
 // `protos`. `protos` must be in wire-format (i.e. a series of non-empty, 8-bit
 // length-prefixed strings), or the empty string to disable ALPN. It returns
 // zero on success and one on failure. Configuring a non-empty string enables
-// ALPN on a client.
+// ALPN on a client. On a client, it will advertise these protocols. On a
+// server, it will use them to automatically select a protocol if the client
+// supports ALPN and no select callback is set.
+//
+// Those configuring HTTP/2 must also configure the cipher suite set on the
+// SSL_CTX so that the selected cipher is compliant with RFC 7540 Section 9.2.
+// Servers should install their own ALPN callback to comply with the RFC.
 //
 // WARNING: this function is dangerous because it breaks the usual return value
 // convention.
@@ -3436,7 +3441,13 @@ OPENSSL_EXPORT int SSL_CTX_set_alpn_protos(SSL_CTX *ctx, const uint8_t *protos,
 // `protos` must be in wire-format (i.e. a series of non-empty, 8-bit
 // length-prefixed strings), or the empty string to disable ALPN. It returns
 // zero on success and one on failure. Configuring a non-empty string enables
-// ALPN on a client.
+// ALPN on a client. On a client, it will advertise these protocols. On a
+// server, it will use them to automatically select a protocol if the client
+// supports ALPN and no select callback is set.
+//
+// Those configuring HTTP/2 must also configure the cipher suite set on the
+// SSL_CTX so that the selected cipher is compliant with RFC 7540 Section 9.2.
+// Servers should install their own ALPN callback to comply with the RFC.
 //
 // WARNING: this function is dangerous because it breaks the usual return value
 // convention.
@@ -3846,6 +3857,12 @@ OPENSSL_EXPORT const SRTP_PROTECTION_PROFILE *SSL_get_selected_srtp_profile(
 OPENSSL_EXPORT SSL_CREDENTIAL *SSL_CREDENTIAL_new_pre_shared_key(
     const uint8_t *key, size_t key_len, const uint8_t *id, size_t id_len,
     const EVP_MD *md, const uint8_t *context, size_t context_len);
+
+// SSL_CREDENTIAL_get0_pre_shared_key_id returns the external identity of this
+// pre-shared key credential, or NULL if `cred` is not a pre-shared key
+// credential or `id_len` is NULL.
+OPENSSL_EXPORT const uint8_t *SSL_CREDENTIAL_get0_pre_shared_key_id(
+    const SSL_CREDENTIAL *cred, size_t *id_len);
 
 
 // TLS 1.2 pre-shared keys.
@@ -4586,6 +4603,11 @@ OPENSSL_EXPORT const char *SSL_early_data_reason_string(
 // ECH extension when no supported ECHConfig is available.
 OPENSSL_EXPORT void SSL_set_enable_ech_grease(SSL *ssl, int enable);
 
+// SSL_set_reject_unusable_ech_config configures whether the client will fail
+// the handshake if a valid, supported ECHConfig cannot be selected to offer
+// ECH.
+OPENSSL_EXPORT void SSL_set_reject_unusable_ech_config(SSL *ssl, int enable);
+
 // SSL_set1_ech_config_list configures `ssl` to, as a client, offer ECH with the
 // specified configuration. `ech_config_list` should contain a serialized
 // ECHConfigList structure. It returns one on success and zero on error.
@@ -5135,8 +5157,7 @@ OPENSSL_EXPORT void SSL_set_msg_callback_arg(SSL *ssl, void *arg);
 // should log `line` followed by a newline, synchronizing with any concurrent
 // access to the log.
 //
-// The format is described in
-// https://www.ietf.org/archive/id/draft-ietf-tls-keylogfile-01.html
+// The format is described in RFC 9850.
 //
 // WARNING: The data in `line` allows an attacker to break security properties
 // of the TLS protocol, including confidentiality, integrity, and forward
@@ -5812,6 +5833,9 @@ OPENSSL_EXPORT const COMP_METHOD *SSL_get_current_expansion(SSL *ssl);
 // SSL_get_server_tmp_key returns zero.
 OPENSSL_EXPORT int SSL_get_server_tmp_key(SSL *ssl, EVP_PKEY **out_key);
 
+// SSL_get_peer_tmp_key returns zero.
+OPENSSL_EXPORT int SSL_get_peer_tmp_key(SSL *ssl, EVP_PKEY **out_key);
+
 // SSL_CTX_set_tmp_dh returns 1.
 OPENSSL_EXPORT int SSL_CTX_set_tmp_dh(SSL_CTX *ctx, const DH *dh);
 
@@ -6250,7 +6274,6 @@ OPENSSL_EXPORT int SSL_CTX_set_tlsext_status_arg(SSL_CTX *ctx, void *arg);
 #define SSL_CURVE_SECP384R1 SSL_GROUP_SECP384R1
 #define SSL_CURVE_SECP521R1 SSL_GROUP_SECP521R1
 #define SSL_CURVE_X25519 SSL_GROUP_X25519
-#define SSL_CURVE_X25519_KYBER768_DRAFT00 SSL_GROUP_X25519_KYBER768_DRAFT00
 
 // SSL_get_curve_id calls `SSL_get_group_id`.
 OPENSSL_EXPORT uint16_t SSL_get_curve_id(const SSL *ssl);
@@ -7089,6 +7112,7 @@ BSSL_NAMESPACE_END
 #define SSL_R_UNSUPPORTED_CERTIFICATE 334
 #define SSL_R_MISSING_KEY 335
 #define SSL_R_INVALID_RAW_PUBLIC_KEY 336
+#define SSL_R_UNUSABLE_ECH_CONFIG_LIST 337
 #define SSL_R_SSLV3_ALERT_CLOSE_NOTIFY 1000
 #define SSL_R_SSLV3_ALERT_UNEXPECTED_MESSAGE 1010
 #define SSL_R_SSLV3_ALERT_BAD_RECORD_MAC 1020

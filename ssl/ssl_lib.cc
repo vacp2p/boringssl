@@ -583,6 +583,7 @@ SSL *SSL_new(SSL_CTX *ctx) {
 SSL_CONFIG::SSL_CONFIG(SSLImpl *ssl_arg)
     : ssl(ssl_arg),
       ech_grease_enabled(false),
+      reject_unusable_ech_config(false),
       signed_cert_timestamps_enabled(false),
       ocsp_stapling_enabled(false),
       channel_id_enabled(false),
@@ -2673,6 +2674,8 @@ const COMP_METHOD *SSL_get_current_compression(SSL *ssl) { return nullptr; }
 const COMP_METHOD *SSL_get_current_expansion(SSL *ssl) { return nullptr; }
 
 int SSL_get_server_tmp_key(SSL *ssl, EVP_PKEY **out_key) { return 0; }
+
+int SSL_get_peer_tmp_key(SSL *ssl, EVP_PKEY **out_key) { return 0; }
 
 void SSL_CTX_set_quiet_shutdown(SSL_CTX *ctx, int mode) {
   FromOpaque(ctx)->quiet_shutdown = (mode != 0);

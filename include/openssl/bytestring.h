@@ -459,6 +459,7 @@ OPENSSL_EXPORT int CBS_parse_generalized_time(const CBS *cbs, struct tm *out_tm,
 OPENSSL_EXPORT int CBS_parse_utc_time(const CBS *cbs, struct tm *out_tm,
                                       int allow_timezone_offset);
 
+
 // CRYPTO ByteBuilder.
 //
 // `CBB` objects allow one to build length-prefixed serialisations. A `CBB`
@@ -638,6 +639,10 @@ OPENSSL_EXPORT int CBB_add_u32(CBB *cbb, uint32_t value);
 // It returns one on success and zero otherwise.
 OPENSSL_EXPORT int CBB_add_u32le(CBB *cbb, uint32_t value);
 
+// CBB_add_u48 appends a 48-bit, big-endian number from `value` to `cbb`. It
+// returns one on success and zero otherwise.
+OPENSSL_EXPORT int CBB_add_u48(CBB *cbb, uint64_t value);
+
 // CBB_add_u64 appends a 64-bit, big-endian number from `value` to `cbb`. It
 // returns one on success and zero otherwise.
 OPENSSL_EXPORT int CBB_add_u64(CBB *cbb, uint64_t value);
@@ -713,6 +718,17 @@ OPENSSL_EXPORT int CBB_add_asn1_oid_from_text(CBB *cbb, const char *text,
 OPENSSL_EXPORT int CBB_add_asn1_relative_oid_from_text(CBB *cbb,
                                                        const char *text,
                                                        size_t len);
+
+// CBB_add_asn1_relative_oid_from_der_to_text reads `data_len` bytes of
+// DER-encoded ASN.1 RELATIVE-OID contents (not including the element framing)
+// from `data` and writes the ASCII representation (e.g., "32473.1") to `cbb`
+// (without a trailing NUL byte). It returns one on success and zero on
+// failure.
+//
+// This function may fail if `data` is an invalid RELATIVE-OID, or if any OID
+// components are too large.
+OPENSSL_EXPORT int CBB_add_asn1_relative_oid_from_der_to_text(
+    CBB *cbb, const uint8_t *data, size_t data_len);
 
 // CBB_add_asn1_oid_component appends a single OID component to `cbb`.
 // It returns one on success and zero on error.

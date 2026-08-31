@@ -351,19 +351,6 @@ bool SSL_get_traffic_secrets(const SSL *ssl,
   return true;
 }
 
-void SSL_CTX_set_aes_hw_override_for_testing(SSL_CTX *ctx,
-                                             bool override_value) {
-  auto *ctx_impl = FromOpaque(ctx);
-  ctx_impl->aes_hw_override = true;
-  ctx_impl->aes_hw_override_value = override_value;
-}
-
-void SSL_set_aes_hw_override_for_testing(SSL *ssl, bool override_value) {
-  auto *ssl_impl = FromOpaque(ssl);
-  ssl_impl->config->aes_hw_override = true;
-  ssl_impl->config->aes_hw_override_value = override_value;
-}
-
 BSSL_NAMESPACE_END
 
 using namespace bssl;
@@ -398,8 +385,6 @@ bssl::SSLContext::SSLContext(const SSL_METHOD *ssl_method)
       false_start_allowed_without_alpn(false),
       handoff(false),
       enable_early_data(false),
-      aes_hw_override(false),
-      aes_hw_override_value(false),
       resumption_across_names_enabled(false) {
   CRYPTO_new_ex_data(&ex_data);
 }
@@ -527,8 +512,6 @@ SSL *SSL_new(SSL_CTX *ctx) {
   ssl->config->retain_only_sha256_of_client_certs =
       ctx_impl->retain_only_sha256_of_client_certs;
   ssl->config->permute_extensions = ctx_impl->permute_extensions;
-  ssl->config->aes_hw_override = ctx_impl->aes_hw_override;
-  ssl->config->aes_hw_override_value = ctx_impl->aes_hw_override_value;
   ssl->config->compliance_policy = ctx_impl->compliance_policy;
 
   if (!ssl->config->supported_group_list.CopyFrom(
@@ -2163,15 +2146,15 @@ int SSL_CTX_set_tmp_dh(SSL_CTX *ctx, const DH *dh) { return 1; }
 int SSL_set_tmp_dh(SSL *ssl, const DH *dh) { return 1; }
 
 STACK_OF(SSL_CIPHER) *SSL_CTX_get_ciphers(const SSL_CTX *ctx) {
-  return FromOpaque(ctx)->cipher_list->ciphers.get();
+  return FromOpaque(ctx)->cipher_list->ciphers();
 }
 
 int SSL_CTX_cipher_in_group(const SSL_CTX *ctx, size_t i) {
   auto *ctx_impl = FromOpaque(ctx);
-  if (i >= sk_SSL_CIPHER_num(ctx_impl->cipher_list->ciphers.get())) {
+  if (i >= sk_SSL_CIPHER_num(ctx_impl->cipher_list->ciphers())) {
     return 0;
   }
-  return ctx_impl->cipher_list->in_group_flags[i];
+  return ctx_impl->cipher_list->in_group_flags()[i];
 }
 
 STACK_OF(SSL_CIPHER) *SSL_get_ciphers(const SSL *ssl) {
@@ -2185,8 +2168,8 @@ STACK_OF(SSL_CIPHER) *SSL_get_ciphers(const SSL *ssl) {
   }
 
   return ssl_impl->config->cipher_list
-             ? ssl_impl->config->cipher_list->ciphers.get()
-             : ssl_impl->ctx->cipher_list->ciphers.get();
+             ? ssl_impl->config->cipher_list->ciphers()
+             : ssl_impl->ctx->cipher_list->ciphers();
 }
 
 const char *SSL_get_cipher_list(const SSL *ssl, int n) {
@@ -2194,8 +2177,9 @@ const char *SSL_get_cipher_list(const SSL *ssl, int n) {
     return nullptr;
   }
 
-  STACK_OF(SSL_CIPHER) *sk = SSL_get_ciphers(ssl);
-  if (sk == nullptr || n < 0 || (size_t)n >= sk_SSL_CIPHER_num(sk)) {
+  const STACK_OF(SSL_CIPHER) *sk = SSL_get_ciphers(ssl);
+  if (sk == nullptr || n < 0 ||
+      static_cast<size_t>(n) >= sk_SSL_CIPHER_num(sk)) {
     return nullptr;
   }
 
@@ -2209,20 +2193,13 @@ const char *SSL_get_cipher_list(const SSL *ssl, int n) {
 
 int SSL_CTX_set_cipher_list(SSL_CTX *ctx, const char *str) {
   auto *ctx_impl = FromOpaque(ctx);
-  const bool has_aes_hw = ctx_impl->aes_hw_override
-                              ? ctx_impl->aes_hw_override_value
-                              : EVP_has_aes_hardware();
-  return ssl_create_cipher_list(&ctx_impl->cipher_list, has_aes_hw, str,
+  return ssl_create_cipher_list(&ctx_impl->cipher_list, str,
                                 false /* not strict */);
 }
 
 int SSL_CTX_set_strict_cipher_list(SSL_CTX *ctx, const char *str) {
   auto *ctx_impl = FromOpaque(ctx);
-  const bool has_aes_hw = ctx_impl->aes_hw_override
-                              ? ctx_impl->aes_hw_override_value
-                              : EVP_has_aes_hardware();
-  return ssl_create_cipher_list(&ctx_impl->cipher_list, has_aes_hw, str,
-                                true /* strict */);
+  return ssl_create_cipher_list(&ctx_impl->cipher_list, str, true /* strict */);
 }
 
 int SSL_set_cipher_list(SSL *ssl, const char *str) {
@@ -2230,10 +2207,7 @@ int SSL_set_cipher_list(SSL *ssl, const char *str) {
   if (!ssl_impl->config) {
     return 0;
   }
-  const bool has_aes_hw = ssl_impl->config->aes_hw_override
-                              ? ssl_impl->config->aes_hw_override_value
-                              : EVP_has_aes_hardware();
-  return ssl_create_cipher_list(&ssl_impl->config->cipher_list, has_aes_hw, str,
+  return ssl_create_cipher_list(&ssl_impl->config->cipher_list, str,
                                 false /* not strict */);
 }
 
@@ -2242,10 +2216,7 @@ int SSL_set_strict_cipher_list(SSL *ssl, const char *str) {
   if (!ssl_impl->config) {
     return 0;
   }
-  const bool has_aes_hw = ssl_impl->config->aes_hw_override
-                              ? ssl_impl->config->aes_hw_override_value
-                              : EVP_has_aes_hardware();
-  return ssl_create_cipher_list(&ssl_impl->config->cipher_list, has_aes_hw, str,
+  return ssl_create_cipher_list(&ssl_impl->config->cipher_list, str,
                                 true /* strict */);
 }
 

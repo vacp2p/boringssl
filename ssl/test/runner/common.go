@@ -362,7 +362,7 @@ var supportedSignatureAlgorithms = []signatureAlgorithm{
 // SRTP protection profiles (See RFC 5764, section 4.1.2)
 const (
 	SRTP_AES128_CM_HMAC_SHA1_80 uint16 = 0x0001
-	SRTP_AES128_CM_HMAC_SHA1_32        = 0x0002
+	SRTP_AES128_CM_HMAC_SHA1_32 uint16 = 0x0002
 )
 
 // PskKeyExchangeMode values (see RFC 8446, section 4.2.9)
@@ -672,15 +672,14 @@ type Config struct {
 	// (resumption) support.
 	SessionTicketsDisabled bool
 
-	// SessionTicketKey is used by TLS servers to provide session
-	// resumption. See RFC 5077. If zero, it will be filled with
-	// random data before the first server handshake.
+	// SessionTicketKey, if not nil, is used by TLS servers to provide
+	// session resumption. See RFC 5077.
 	//
 	// If multiple servers are terminating connections for the same host
 	// they should all have the same SessionTicketKey. If the
 	// SessionTicketKey leaks, previously recorded and future TLS
 	// connections using that key are compromised.
-	SessionTicketKey [32]byte
+	SessionTicketKey *[32]byte
 
 	// ClientSessionCache is a cache of ClientSessionState entries
 	// for TLS session resumption.
@@ -789,8 +788,6 @@ type Config struct {
 	// Bugs specifies optional misbehaviour to be used for testing other
 	// implementations.
 	Bugs ProtocolBugs
-
-	serverInitOnce sync.Once // guards calling (*Config).serverInit
 }
 
 type BadValue int
@@ -2306,23 +2303,6 @@ type ProtocolBugs struct {
 	ExpectedServerPadding bool
 }
 
-func (c *Config) serverInit() {
-	if c.SessionTicketsDisabled {
-		return
-	}
-
-	// If the key has already been set then we have nothing to do.
-	for _, b := range c.SessionTicketKey {
-		if b != 0 {
-			return
-		}
-	}
-
-	if _, err := io.ReadFull(c.rand(), c.SessionTicketKey[:]); err != nil {
-		c.SessionTicketsDisabled = true
-	}
-}
-
 func (c *Config) rand() io.Reader {
 	r := c.Rand
 	if r == nil {
@@ -2569,11 +2549,19 @@ type Credential struct {
 	// Properties is the certificate properties (draft-ietf-tls-trust-anchor-ids)
 	// associated with this credential.
 	Properties CertificatePropertyList
+	// SessionIDContext is the session ID context to configure on the credential.
+	SessionIDContext []byte
 }
 
 func (c *Credential) WithSignatureAlgorithms(sigAlgs ...signatureAlgorithm) *Credential {
 	ret := *c
 	ret.SignatureAlgorithms = sigAlgs
+	return &ret
+}
+
+func (c *Credential) WithSessionIDContext(sidCtx []byte) *Credential {
+	ret := *c
+	ret.SessionIDContext = sidCtx
 	return &ret
 }
 

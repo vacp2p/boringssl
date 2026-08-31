@@ -5,9 +5,9 @@
     "ref": "refs/heads/main",
     "mirror_url": "https://github.com/google/boringssl.git"
   },
-  "previous_upstream_sha": "5ac7567c234514157a504ff3fbedc0f5eddbf678",
-  "current_upstream_sha": "7496006103890fdd58b4c923e741692688b13415",
-  "last_synced_at": "2026-08-24T06:28:59Z",
+  "previous_upstream_sha": "7496006103890fdd58b4c923e741692688b13415",
+  "current_upstream_sha": "a074f282d026a0ebbed7c9efef5a0cf63f72338d",
+  "last_synced_at": "2026-08-31T06:50:13Z",
   "local_patch": {
     "description": "Use portable C code for fiat_p256 mul/sqr on Windows by removing ADX assembly dispatch.",
     "commit": "d6238994c547f070c1e053aada216ee3ce67e8e0",
@@ -15,7 +15,7 @@
     "sha256": "7c101914e32a4586a74d77a0b789ec151b55b37d82818a4c22e26792a59118d1"
   },
   "last_verification": {
-    "github_mirror_sha": "7496006103890fdd58b4c923e741692688b13415",
+    "github_mirror_sha": "a074f282d026a0ebbed7c9efef5a0cf63f72338d",
     "patch_replayed": true,
     "fiat_p256_adx_dispatch_absent": true
   },
@@ -73,6 +73,13 @@
       "previous_upstream_sha": "5ac7567c234514157a504ff3fbedc0f5eddbf678",
       "new_upstream_sha": "7496006103890fdd58b4c923e741692688b13415",
       "github_mirror_sha": "7496006103890fdd58b4c923e741692688b13415",
+      "local_patch_sha256": "7c101914e32a4586a74d77a0b789ec151b55b37d82818a4c22e26792a59118d1"
+    },
+    {
+      "synced_at": "2026-08-31T06:50:13Z",
+      "previous_upstream_sha": "7496006103890fdd58b4c923e741692688b13415",
+      "new_upstream_sha": "a074f282d026a0ebbed7c9efef5a0cf63f72338d",
+      "github_mirror_sha": "a074f282d026a0ebbed7c9efef5a0cf63f72338d",
       "local_patch_sha256": "7c101914e32a4586a74d77a0b789ec151b55b37d82818a4c22e26792a59118d1"
     }
   ]

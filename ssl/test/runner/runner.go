@@ -221,8 +221,8 @@ var (
 )
 
 var (
-	testOCSPExtension = append([]byte{byte(extensionStatusRequest) >> 8, byte(extensionStatusRequest), 0, 8, statusTypeOCSP, 0, 0, 4}, testOCSPResponse...)
-	testSCTExtension  = append([]byte{byte(extensionSignedCertificateTimestamp) >> 8, byte(extensionSignedCertificateTimestamp), 0, byte(len(testSCTList))}, testSCTList...)
+	testOCSPExtension = append([]byte{byte(extensionStatusRequest >> 8), byte(extensionStatusRequest), 0, 8, statusTypeOCSP, 0, 0, 4}, testOCSPResponse...)
+	testSCTExtension  = append([]byte{byte(extensionSignedCertificateTimestamp >> 8), byte(extensionSignedCertificateTimestamp), 0, byte(len(testSCTList))}, testSCTList...)
 )
 
 var (
@@ -702,7 +702,9 @@ type testCase struct {
 	// shimCredentials is a list of credentials which should be configured at
 	// the shim. It differs from shimCertificate only in whether the old or
 	// new APIs are used.
-	shimCredentials       []*Credential
+	shimCredentials []*Credential
+	// resumeShimCredentials, if set, overrides shimCredentials for resumption
+	// connections.
 	resumeShimCredentials []*Credential
 }
 
@@ -813,7 +815,7 @@ func doExchange(test *testCase, config *Config, conn net.Conn, isResume bool, tr
 		}
 		conn = connDebug
 		if *flagDebug {
-			defer connDebug.WriteTo(os.Stdout)
+			defer connDebug.WriteFlowsTo(os.Stdout)
 		}
 		if *transcriptDir != "" {
 			defer func() {
@@ -1451,6 +1453,12 @@ func doExchanges(test *testCase, shim *shimProcess, resumeCount int, transcripts
 		config.Rand = &deterministicRand{}
 	}
 
+	var ticketKey [32]byte
+	if _, err := io.ReadFull(config.rand(), ticketKey[:]); err != nil {
+		return err
+	}
+	config.SessionTicketKey = &ticketKey
+
 	conn, err := shim.accept()
 	if err != nil {
 		return err
@@ -1461,7 +1469,6 @@ func doExchanges(test *testCase, shim *shimProcess, resumeCount int, transcripts
 		return err
 	}
 
-	nextTicketKey := config.SessionTicketKey
 	for i := range resumeCount {
 		var resumeConfig Config
 		if test.resumeConfig != nil {
@@ -1477,20 +1484,21 @@ func doExchanges(test *testCase, shim *shimProcess, resumeCount int, transcripts
 		if test.newSessionsOnResume {
 			resumeConfig.ClientSessionCache = nil
 			resumeConfig.ServerSessionCache = nil
-			if _, err := resumeConfig.rand().Read(resumeConfig.SessionTicketKey[:]); err != nil {
+			if _, err := io.ReadFull(resumeConfig.rand(), ticketKey[:]); err != nil {
 				return err
 			}
+			resumeConfig.SessionTicketKey = &ticketKey
 		} else {
 			resumeConfig.ClientSessionCache = config.ClientSessionCache
 			resumeConfig.ServerSessionCache = config.ServerSessionCache
 			// Rotate the ticket keys between each connection, with each connection
 			// encrypting with next connection's keys. This ensures that we test
 			// the renewed sessions.
-			resumeConfig.SessionTicketKey = nextTicketKey
-			if _, err := resumeConfig.rand().Read(nextTicketKey[:]); err != nil {
+			resumeConfig.SessionTicketKey = new(ticketKey)
+			if _, err := io.ReadFull(resumeConfig.rand(), ticketKey[:]); err != nil {
 				return err
 			}
-			resumeConfig.Bugs.EncryptSessionTicketKey = &nextTicketKey
+			resumeConfig.Bugs.EncryptSessionTicketKey = &ticketKey
 		}
 
 		var connResume net.Conn
@@ -1614,6 +1622,7 @@ func appendCredentialFlags(flags []string, cred *Credential, prefix string, newC
 	if !cred.Properties.Empty() {
 		handleBase64Field("cert-properties", cred.Properties.Marshal())
 	}
+	handleBase64Field("session-id-context", cred.SessionIDContext)
 	return flags
 }
 
@@ -1646,6 +1655,10 @@ func runTest(dispatcher *shimDispatcher, statusChan chan statusMsg, test *testCa
 		flags = append(flags, "-server")
 	}
 
+	// Credential flags trigger state in the command-line parser, so append these
+	// flags first.
+	flags = append(flags, test.flags...)
+
 	// Configure the default credential.
 	shimCertificate := test.shimCertificate
 	if shimCertificate == nil && len(test.shimCredentials) == 0 && len(test.resumeShimCredentials) == 0 && test.testType == serverTest && len(test.config.PreSharedKey) == 0 {
@@ -1663,8 +1676,12 @@ func runTest(dispatcher *shimDispatcher, statusChan chan statusMsg, test *testCa
 	}
 
 	// Configure any additional credentials.
+	var initialPrefix string
+	if len(test.resumeShimCredentials) > 0 {
+		initialPrefix = "-on-initial"
+	}
 	for _, cred := range test.shimCredentials {
-		flags = appendCredentialFlags(flags, cred, "", true)
+		flags = appendCredentialFlags(flags, cred, initialPrefix, true)
 	}
 	for _, cred := range test.resumeShimCredentials {
 		flags = appendCredentialFlags(flags, cred, "-on-resume", true)
@@ -1853,8 +1870,6 @@ func runTest(dispatcher *shimDispatcher, statusChan chan statusMsg, test *testCa
 	if test.config.Credential != nil {
 		flags = append(flags, "-trust-cert", test.config.Credential.RootPath)
 	}
-
-	flags = append(flags, test.flags...)
 
 	var env []string
 	if mallocNumToFail >= 0 {
@@ -2331,6 +2346,7 @@ func main() {
 	addMinimumVersionTests()
 	addExtensionTests()
 	addResumptionVersionTests()
+	addCredentialSessionIDContextTests()
 	addExtendedMasterSecretTests()
 	addRenegotiationTests()
 	addDTLSReplayTests()

@@ -233,7 +233,7 @@ OPENSSL_EXPORT void EVP_HPKE_CTX_free(EVP_HPKE_CTX *ctx);
 // sets `*out_enc_len` to the number of bytes written. It writes at most
 // `max_enc` bytes and fails if the buffer is too small. Setting `max_enc` to at
 // least `EVP_HPKE_MAX_ENC_LENGTH` will ensure the buffer is large enough. An
-// exact size may also be determined by `EVP_PKEY_KEM_enc_len`.
+// exact size may also be determined by `EVP_HPKE_KEM_enc_len`.
 //
 // This function returns one on success and zero on error. Note that
 // `peer_public_key` may be invalid, in which case this function will return an
@@ -395,6 +395,13 @@ struct evp_hpke_key_st {
   const EVP_HPKE_KEM *kem;
   uint8_t private_key[EVP_HPKE_MAX_PRIVATE_KEY_LENGTH];
   uint8_t public_key[EVP_HPKE_MAX_PUBLIC_KEY_LENGTH];
+
+  // `pkey`, if non-null, takes precedence over `private_key` and `public_key`,
+  // which are left unused. Otherwise `private_key` and `public_key` are used
+  // instead.
+  // TODO(crbug.com/535883377): Unify EVP_HPKE_KEM and EVP_KEM for all supported
+  // HPKE KEMs.
+  EVP_PKEY *pkey;
 };
 
 
@@ -407,12 +414,13 @@ extern "C++" {
 
 BSSL_NAMESPACE_BEGIN
 
-using ScopedEVP_HPKE_CTX =
-    internal::StackAllocated<EVP_HPKE_CTX, void, EVP_HPKE_CTX_zero,
-                             EVP_HPKE_CTX_cleanup>;
-using ScopedEVP_HPKE_KEY =
-    internal::StackAllocatedMovable<EVP_HPKE_KEY, void, EVP_HPKE_KEY_zero,
-                                    EVP_HPKE_KEY_cleanup, EVP_HPKE_KEY_move>;
+BORINGSSL_MAKE_STACK_TRAITS(EVP_HPKE_CTX, EVP_HPKE_CTX_zero,
+                            EVP_HPKE_CTX_cleanup)
+using ScopedEVP_HPKE_CTX = internal::StackAllocated<EVP_HPKE_CTX>;
+
+BORINGSSL_MAKE_STACK_TRAITS_MOVABLE(EVP_HPKE_KEY, EVP_HPKE_KEY_zero,
+                                    EVP_HPKE_KEY_cleanup, EVP_HPKE_KEY_move)
+using ScopedEVP_HPKE_KEY = internal::StackAllocatedMovable<EVP_HPKE_KEY>;
 
 BORINGSSL_MAKE_DELETER(EVP_HPKE_CTX, EVP_HPKE_CTX_free)
 BORINGSSL_MAKE_DELETER(EVP_HPKE_KEY, EVP_HPKE_KEY_free)

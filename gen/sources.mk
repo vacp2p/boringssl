@@ -751,6 +751,7 @@ boringssl_crypto_test_sources := \
   crypto/constant_time_test.cc \
   crypto/cpu_arm_linux_test.cc \
   crypto/crypto_test.cc \
+  crypto/curve25519/curve25519_test.cc \
   crypto/curve25519/ed25519_test.cc \
   crypto/curve25519/spake25519_test.cc \
   crypto/curve25519/x25519_test.cc \
@@ -1004,6 +1005,8 @@ boringssl_crypto_test_data := \
   crypto/x509/test/mtc/cert_33_8.pem \
   crypto/x509/test/mtc/cert_33_9.pem \
   crypto/x509/test/mtc/cert_5036_0.pem \
+  crypto/x509/test/mtc/large_merkle_tree_consistency_proof_tests.txt \
+  crypto/x509/test/mtc/large_merkle_tree_inclusion_proof_tests.txt \
   crypto/x509/test/policy_intermediate.pem \
   crypto/x509/test/policy_intermediate_any.pem \
   crypto/x509/test/policy_intermediate_duplicate.pem \
@@ -1388,6 +1391,8 @@ boringssl_pki_test_sources := \
   pki/verify_unittest.cc
 
 boringssl_pki_test_data := \
+  crypto/x509/test/mtc/large_merkle_tree_consistency_proof_tests.txt \
+  crypto/x509/test/mtc/large_merkle_tree_inclusion_proof_tests.txt \
   pki/testdata/cert_issuer_source_static_unittest/c1.pem \
   pki/testdata/cert_issuer_source_static_unittest/c2.pem \
   pki/testdata/cert_issuer_source_static_unittest/d.pem \
